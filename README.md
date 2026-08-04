@@ -20,24 +20,31 @@ Release 的数据工厂，服务于 [PRTS-MCP](https://github.com/3aKHP/prts-mcp
 ## 流水线
 
 ```
+check      变更检测：HG CDN versionId vs 最新 Release tag，未变化则短路（akdp run 默认启用，--force 跳过）
 fetch      HG CDN → arkprts 解包（带重试/完整性校验），hot_update_list 变更检测
 normalize  cn/ → zh_CN/ 布局映射、排除清单
 merge      基线 Release 树 ⊕ 新解包树 → 候选树（新文件覆盖，基线文件保留）
-story      剧情 txt → JSON（ASTR-Script 集成，TODO）
-validate   校验门：契约文件、探针、记录数回归、UTF-8、累积不变量
+story      剧情 txt → JSON（vendor/ASTR-Script，含大小写错位修复与索引重建）
+validate   校验门：契约文件、探针、记录数回归、UTF-8、累积不变量、剧情转换完整性
 package    三个 zip + manifest.json
 publish    upstream-* / gamedata-* Release（gh CLI）
 ```
 
+注意：tag 中的版本标识已从源 commit sha 切换为 HG `versionId`（首次新格式发布后，
+check 的比较才同口径；此前会恒报 CHANGED）。
+
 ## 使用
 
 ```bash
-uv sync
-# 全链路（fetch 需要网络和约 500MB 下载）
+uv sync --all-extras
+git submodule update --init   # ASTR-Script（story 步骤依赖）
+# 全链路（fetch 需要网络和约 500MB 下载；versionId 未变时自动短路）
 uv run akdp --workdir work run
 # 或分步
+uv run akdp --workdir work check
 uv run akdp --workdir work fetch
 uv run akdp --workdir work merge
+uv run akdp --workdir work story
 uv run akdp --workdir work validate
 uv run akdp --workdir work package
 ```
