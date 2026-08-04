@@ -1,0 +1,3 @@
+[submodule "vendor/ASTR-Script"]
+	path = vendor/ASTR-Script
+	url = https://github.com/050644zf/ASTR-Script.git
