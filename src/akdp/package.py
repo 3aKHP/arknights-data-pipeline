@@ -32,6 +32,7 @@ def package_candidate(
     source_info: dict | None = None,
     merge_stats: dict | None = None,
     validation: dict | None = None,
+    story_stats: dict | None = None,
     tool_versions: dict | None = None,
 ) -> dict:
     """Build zh_CN-excel.zip / zh_CN-levels.zip / zh_CN.zip + manifest.json.
@@ -69,6 +70,7 @@ def package_candidate(
         "source": source_info or {},
         "tools": tool_versions or {},
         "merge": merge_stats or {},
+        "story": story_stats or {},
         "validation": validation or {},
         "assets": {
             name: {"sha256": _sha256(p), "size": p.stat().st_size}

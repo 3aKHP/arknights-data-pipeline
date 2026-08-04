@@ -130,24 +130,39 @@ def validate_candidate(
             if not any(ev in k for k in stages):
                 res.errors.append(f"probe failed: no stage in stage_table for {ev}")
 
-    # --- gate 6 (warning only): story review entries without converted story JSON
-    srt_path = zh / "gamedata/excel/story_review_table.json"
-    if srt_path.exists():
-        srt = json.loads(srt_path.read_text(encoding="utf-8"))
-        story_dir = zh / "gamedata/story"
-        missing = set()
-        for entry in srt.values():
-            if not isinstance(entry, dict):
+    # --- gate 6: story entries without converted story JSON
+    # Covers story_review_table infoUnlockDatas and meta table extra avgs.
+    # txt present but json missing = conversion failed (error);
+    # txt missing entirely = extraction gap (warning, needs investigation).
+    from .story import iter_story_refs
+
+    story_dir = zh / "gamedata/story"
+    if story_dir.is_dir():
+        # case-insensitive source index: client tables sometimes reference
+        # paths that differ from extracted files only by case
+        txt_index = {
+            p.relative_to(story_dir).as_posix().lower()
+            for p in story_dir.rglob("*.txt")
+        }
+        unconverted, source_missing = set(), set()
+        for txt in iter_story_refs(zh):
+            if (story_dir / f"{txt}.json").exists():
                 continue
-            for s in entry.get("infoUnlockDatas", []):
-                txt = s.get("storyTxt")
-                if txt and not (story_dir / f"{txt}.json").exists():
-                    missing.add(txt)
-        res.metrics["story_entries_missing_json"] = len(missing)
-        if missing:
+            if f"{txt}.txt".lower() in txt_index:
+                unconverted.add(txt)
+            else:
+                source_missing.add(txt)
+        res.metrics["story_entries_unconverted"] = len(unconverted)
+        res.metrics["story_entries_source_missing"] = len(source_missing)
+        if unconverted:
+            res.errors.append(
+                f"{len(unconverted)} story entries have .txt but no converted JSON, "
+                f"e.g. {sorted(unconverted)[:3]}"
+            )
+        if source_missing:
             res.warnings.append(
-                f"{len(missing)} story entries lack converted JSON (ASTR conversion pending), "
-                f"e.g. {sorted(missing)[:3]}"
+                f"{len(source_missing)} story entries lack source .txt in the tree, "
+                f"e.g. {sorted(source_missing)[:3]}"
             )
 
     return res
