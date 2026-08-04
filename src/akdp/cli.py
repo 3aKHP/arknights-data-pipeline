@@ -8,10 +8,12 @@ import sys
 from pathlib import Path
 
 from . import baseline as baseline_mod
+from . import check as check_mod
 from . import fetch as fetch_mod
 from . import merge as merge_mod
 from . import package as package_mod
 from . import publish as publish_mod
+from . import story as story_mod
 from . import validate as validate_mod
 from .normalize import normalize_extraction
 
@@ -76,6 +78,28 @@ def cmd_merge(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_check(args: argparse.Namespace) -> int:
+    remote = check_mod.fetch_remote_version(args.server)
+    published = check_mod.latest_published_version("3aKHP/ArknightsGameData")
+    changed = remote["versionId"] != published
+    print(f"remote versionId:    {remote['versionId']} (manifest {remote['manifestVersion']})")
+    print(f"published versionId: {published}")
+    print("CHANGED" if changed else "UNCHANGED")
+    return 0 if changed else 2
+
+
+def cmd_story(args: argparse.Namespace) -> int:
+    stats = story_mod.convert_stories(args.workdir / "candidate", args.astr_path)
+    (args.workdir / "story.json").write_text(
+        json.dumps(stats.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    print(f"story: converted {len(stats.converted)}, "
+          f"missing source {len(stats.missing_source)}, failed {len(stats.failed)}")
+    for f in stats.failed:
+        print(f"[story] FAIL {f['story']}: {f['error']}", file=sys.stderr)
+    return 1 if stats.failed else 0
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     result = validate_mod.validate_candidate(
         args.workdir / "candidate",
@@ -102,12 +126,14 @@ def cmd_package(args: argparse.Namespace) -> int:
     workdir = args.workdir
     merge_info = json.loads((workdir / "merge.json").read_text(encoding="utf-8")) if (workdir / "merge.json").exists() else {}
     validation = json.loads((workdir / "validation.json").read_text(encoding="utf-8")) if (workdir / "validation.json").exists() else {}
+    story_stats = json.loads((workdir / "story.json").read_text(encoding="utf-8")) if (workdir / "story.json").exists() else {}
     manifest = package_mod.package_candidate(
         workdir / "candidate",
         workdir / "dist",
         source_info=merge_info.get("source"),
         merge_stats=merge_info.get("stats"),
         validation=validation,
+        story_stats=story_stats,
         tool_versions=_tool_versions(),
     )
     for name, meta in manifest["assets"].items():
@@ -128,7 +154,14 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    for cmd in (cmd_baseline, cmd_fetch, cmd_merge, cmd_validate, cmd_package):
+    if not args.force:
+        remote = check_mod.fetch_remote_version(args.server)
+        published = check_mod.latest_published_version("3aKHP/ArknightsGameData")
+        if remote["versionId"] == published:
+            print(f"[run] versionId unchanged ({published}), nothing to do")
+            return 0
+        print(f"[run] version changed: {published} -> {remote['versionId']}")
+    for cmd in (cmd_baseline, cmd_fetch, cmd_merge, cmd_story, cmd_validate, cmd_package):
         rc = cmd(args)
         if rc != 0:
             print(f"[run] step {cmd.__name__} failed, stopping (fail-closed)", file=sys.stderr)
@@ -150,6 +183,13 @@ def main() -> int:
     p.add_argument("--attempts", type=int, default=5)
     p.set_defaults(func=cmd_fetch)
 
+    p = sub.add_parser("check", help="compare remote versionId with latest published release")
+    p.set_defaults(func=cmd_check)
+
+    p = sub.add_parser("story", help="convert story txt to JSON via ASTR-Script")
+    p.add_argument("--astr-path", type=Path, default=Path("vendor/ASTR-Script"))
+    p.set_defaults(func=cmd_story)
+
     for name, func, help_ in (
         ("merge", cmd_merge, "normalize + merge into candidate tree"),
         ("package", cmd_package, "build distribution zips + manifest"),
@@ -166,9 +206,11 @@ def main() -> int:
     p.add_argument("--execute", action="store_true", help="actually create GitHub releases")
     p.set_defaults(func=cmd_publish)
 
-    p = sub.add_parser("run", help="baseline -> fetch -> merge -> validate -> package")
+    p = sub.add_parser("run", help="check -> baseline -> fetch -> merge -> story -> validate -> package")
     p.add_argument("--clobber", action="store_true")
+    p.add_argument("--force", action="store_true", help="run even if versionId is unchanged")
     p.add_argument("--attempts", type=int, default=5)
+    p.add_argument("--astr-path", type=Path, default=Path("vendor/ASTR-Script"))
     p.add_argument("--probe-operator", action="append")
     p.add_argument("--probe-event", action="append")
     p.set_defaults(func=cmd_run)
