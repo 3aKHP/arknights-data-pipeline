@@ -20,18 +20,39 @@ Release 的数据工厂，服务于 [PRTS-MCP](https://github.com/3aKHP/prts-mcp
 ## 流水线
 
 ```
-check      变更检测：HG CDN versionId vs 最新 Release tag，未变化则短路（akdp run 默认启用，--force 跳过）
-fetch      HG CDN → arkprts 解包（带重试/完整性校验），hot_update_list 变更检测
+check      变更检测：HG CDN versionId vs 工厂仓库最新 Release tag，未变化则短路
+fetch      HG CDN → arkprts 解包（带重试/完整性校验）
 normalize  cn/ → zh_CN/ 布局映射、排除清单
 merge      基线 Release 树 ⊕ 新解包树 → 候选树（新文件覆盖，基线文件保留）
 story      剧情 txt → JSON（vendor/ASTR-Script，含大小写错位修复与索引重建）
+summarize  增量 LLM 双级别摘要（summaries.json + event_summaries.json）
 validate   校验门：契约文件、探针、记录数回归、UTF-8、累积不变量、剧情转换完整性
 package    三个 zip + manifest.json
-publish    upstream-* / gamedata-* Release（gh CLI）
+publish    data-* 单 Release 三 asset，发到工厂仓库自身（gh CLI）
 ```
 
-注意：tag 中的版本标识已从源 commit sha 切换为 HG `versionId`（首次新格式发布后，
-check 的比较才同口径；此前会恒报 CHANGED）。
+## 分发
+
+工厂仓库（`3aKHP/arknights-data-pipeline`）自身就是分发点。每个游戏版本一个
+Release（`data-<versionId>`），带三个 asset：
+- `zh_CN-excel.zip` — 数值表
+- `zh_CN-levels.zip` — 关卡数据
+- `zh_CN.zip` — excel + 剧情 JSON + ASTR 索引 + LLM 摘要
+
+Release notes 即 manifest.json（源版本、工具版本、合并统计、摘要统计、校验指标、包哈希）。
+
+### LLM 配置
+
+`summarize` 步骤需要 OpenAI Chat Completions 兼容端点，通过环境变量或 `.env` 配置：
+
+```
+LLM_BASE_URL=https://api.deepseek.com/v1   # 或任意兼容端点
+LLM_API_KEY=sk-...
+LLM_MODEL=deepseek-v4-flash                # 或任意兼容模型
+```
+
+增量策略：候选树中的 `summaries.json` / `event_summaries.json` 由累积合并从基线
+继承，`summarize` 只对缺失条目调 LLM。典型更新 ~15-20 章 + 1-2 活动 ≈ 20 次调用。
 
 ## 使用
 
