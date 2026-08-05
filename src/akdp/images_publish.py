@@ -15,7 +15,11 @@ import subprocess
 import time
 from pathlib import Path
 
-from .package import _sha256  # reuse the proven helper
+import json
+import logging
+import subprocess
+import time
+from pathlib import Path
 
 _logger = logging.getLogger(__name__)
 
@@ -84,8 +88,13 @@ def _publish_baseline(
 
     # Create baseline Release (not latest).
     notes_file = dist_dir / "baseline-notes.md"
+    artwork_count = len(manifest.get("artworks", {}))
+    shard_list = sorted(manifest.get("shards", {}).keys())
     notes_file.write_text(
-        "```json\n" + json.dumps(manifest, ensure_ascii=False, indent=2) + "\n```",
+        f"Image baseline for game version {version_id}.\n\n"
+        f"Artworks: {artwork_count}\nShards: {', '.join(shard_list)}\n\n"
+        f"Full index is available as the `index.json` asset on the "
+        f"`images-{version_id}` sentinel release.",
         encoding="utf-8",
     )
     if not _release_exists(tag):
@@ -117,8 +126,8 @@ def _publish_baseline(
         ], f"create sentinel {delta_tag}")
     _run_with_retry([
         "gh", "release", "upload", delta_tag,
-        "-R", DIST_REPO, "--clobber", str(index_path),
-    ], "upload index.json to sentinel")
+        "-R", DIST_REPO, "--clobber", str(sentinel), str(index_path),
+    ], "upload sentinel + index.json")
     _logger.info("[images-publish] baseline %s + sentinel %s published", tag, delta_tag)
 
 
@@ -136,8 +145,11 @@ def _publish_delta(
         return
 
     notes_file = dist_dir / "delta-notes.md"
+    artwork_count = len(manifest.get("artworks", {}))
     notes_file.write_text(
-        "```json\n" + json.dumps(manifest, ensure_ascii=False, indent=2) + "\n```",
+        f"Image delta for game version {version_id}.\n\n"
+        f"Artworks: {artwork_count}\n"
+        f"Baseline: {manifest.get('baselineVersion', '?')}",
         encoding="utf-8",
     )
     if not _release_exists(tag):
