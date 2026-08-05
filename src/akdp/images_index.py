@@ -16,6 +16,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from .images_extract import _load_skin_ids
+
 _logger = logging.getLogger(__name__)
 
 
@@ -53,17 +55,6 @@ def _classify_skin_id(skin_id: str) -> tuple[str, str]:
     return "base", "chararts"
 
 
-def _load_valid_skin_ids(excel_path: Path) -> set[str]:
-    """Load valid skinIds from skin_table + character_table (same filter as extract)."""
-    skin_table = json.loads((excel_path / "skin_table.json").read_text(encoding="utf-8"))
-    char_table = json.loads((excel_path / "character_table.json").read_text(encoding="utf-8"))
-    char_ids = {cid for cid in char_table if cid.startswith("char_")}
-    return {
-        sid for sid, info in skin_table.get("charSkins", {}).items()
-        if info.get("charId") in char_ids and not sid.startswith("token_")
-    }
-
-
 def generate_index(
     images_dir: Path,
     excel_path: Path,
@@ -75,7 +66,7 @@ def generate_index(
     Returns (index_dict, stats).  The index follows the schema agreed in
     issue #1: artworks keyed by skinId, each with kind/shard/original metadata.
     """
-    valid_skin_ids = _load_valid_skin_ids(excel_path)
+    valid_skin_ids = _load_skin_ids(excel_path)
     stats = IndexStats()
     artworks: dict[str, dict] = {}
 
@@ -108,14 +99,17 @@ def generate_index(
         "artworks": artworks,
     }
 
-    # Coverage check
+    # Coverage check (only meaningful on full runs; incremental runs
+    # only extract changed bundles, so gaps are expected).
     missing_coverage = valid_skin_ids - set(artworks)
     if missing_coverage:
-        _logger.warning(
-            "images-index: %d valid skin IDs have no extracted PNG: %s",
+        _logger.debug(
+            "images-index: %d valid skin IDs have no extracted PNG (expected on incremental runs)",
             len(missing_coverage),
-            sorted(missing_coverage)[:10],
         )
+
+    if not version_id:
+        _logger.warning("images-index: versionId is empty (hashes.json not found)")
 
     _logger.info(
         "images-index: %d indexed, %d skipped, %d missing coverage",

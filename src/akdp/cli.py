@@ -262,6 +262,12 @@ def cmd_images_extract(args: argparse.Namespace) -> int:
 def cmd_images_index(args: argparse.Namespace) -> int:
     from . import images_index
 
+    excel = args.excel_dir
+    if not excel.is_dir():
+        print(f"[images-index] excel dir not found: {excel}", file=sys.stderr)
+        print("  Pass --excel-dir <path> pointing at gamedata/excel/", file=sys.stderr)
+        return 1
+
     # Read versionId from hashes.json if available.
     version_id = ""
     hashes_file = args.workdir / "images-cache" / "hashes.json"
