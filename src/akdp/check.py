@@ -22,7 +22,8 @@ def fetch_remote_version(server: str = "cn") -> dict:
     import json
 
     from arkprts import network as netn
-    from arkprts.assets.bundle import asset_path_to_server_filename
+
+    from . import cdn
 
     session = netn.NetworkSession(default_server=server)
 
@@ -31,11 +32,7 @@ def fetch_remote_version(server: str = "cn") -> dict:
         try:
             if not session.versions[(server, platform)]:
                 await session.load_version_config(server, platform)
-            url = (
-                session.domains[server]["hu"]
-                + f"/{platform}/assets/{session.versions[(server, platform)]['resVersion']}/"
-                + asset_path_to_server_filename("hot_update_list.json")
-            )
+            url = cdn.asset_url(session, "hot_update_list.json", server)
             async with session.session.get(url) as response:
                 response.raise_for_status()
                 return json.loads(await response.read())
