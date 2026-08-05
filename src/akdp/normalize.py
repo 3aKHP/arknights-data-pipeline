@@ -14,6 +14,17 @@ from pathlib import Path
 
 #: paths under gamedata/ excluded from the normalized tree (glob patterns)
 EXCLUSIONS: list[str] = []
+POLICY_VERSION = "akdp-normalization/v1"
+
+
+def policy_manifest() -> dict:
+    """Return the normalization policy recorded in every release manifest."""
+    return {
+        "version": POLICY_VERSION,
+        "inputLayout": "<server>/gamedata/**",
+        "outputLayout": "zh_CN/gamedata/**",
+        "exclusions": list(EXCLUSIONS),
+    }
 
 
 def normalize_extraction(extract_root: Path, out_root: Path, *, server: str = "cn") -> Path:

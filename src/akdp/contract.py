@@ -28,13 +28,19 @@ REQUIRED_STORY_FILES = [
     "storyinfo.json",
 ]
 
-#: distribution targets: asset name -> top-level gamedata subtree(s) included
-PACKAGE_GAMEDATA_REPO = "3aKHP/ArknightsGameData"
-PACKAGE_STORY_REPO = "3aKHP/ArknightsStoryJson"
-
 EXCEL_ASSET = "zh_CN-excel.zip"
 LEVELS_ASSET = "zh_CN-levels.zip"
 STORY_ASSET = "zh_CN.zip"
+MANIFEST_ASSET = "manifest.json"
+
+# Versioned consumer contract. Bump when required files or schema gates change.
+CONTRACT_VERSION = "prts-mcp-data/v1"
+
+# The workflow downloads this exact torappu artifact.  Keeping the source
+# revision in the manifest makes a release auditable even when the binary's
+# `flatc --version` output is not sufficient to identify its build.
+TORAPPU_FLATC_COMMIT = "37e645f4528248b639b63c35dbb63ee7ae64a315"
+TORAPPU_FLATC_SHA256 = "b5adf3dbc4867a3f08acf6e30f32671f114d189093da07453ff2764c6acdd925"
 
 #: index files at zh_CN/ root in the story zip (ASTR-generated)
 STORY_INDEX_FILES = [

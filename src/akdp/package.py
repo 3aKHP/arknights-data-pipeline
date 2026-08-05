@@ -4,17 +4,32 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import subprocess
 import zipfile
 from pathlib import Path
 
 from . import __version__, contract
+from .normalize import policy_manifest
+
+_ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+
+
+def _write_deterministic(zf: zipfile.ZipFile, path: Path, arcname: str) -> None:
+    """Write a file with stable ZIP metadata so identical inputs hash alike."""
+    info = zipfile.ZipInfo(arcname, date_time=_ZIP_EPOCH)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.create_system = 3
+    info.external_attr = 0o100644 << 16
+    zf.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED,
+                compresslevel=9)
 
 
 def _zip_tree(src_root: Path, arc_prefix: str, out: Path) -> None:
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for p in sorted(src_root.rglob("*")):
             if p.is_file():
-                zf.write(p, f"{arc_prefix}/{p.relative_to(src_root)}")
+                _write_deterministic(zf, p, f"{arc_prefix}/{p.relative_to(src_root)}")
 
 
 def _sha256(path: Path) -> str:
@@ -23,6 +38,40 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _git_provenance() -> dict[str, object]:
+    """Capture the pipeline revision and whether local files were modified."""
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain"], capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return {"commit": None, "dirty": None}
+    return {"commit": commit, "dirty": bool(dirty)}
+
+
+def _tool_provenance(tool_versions: dict | None) -> dict:
+    """Add reproducibility metadata without assuming every tool is installed."""
+    tools = dict(tool_versions or {})
+    flatc = shutil.which("flatc")
+    if flatc:
+        actual_sha = _sha256(Path(flatc))
+        if actual_sha != contract.TORAPPU_FLATC_SHA256:
+            raise RuntimeError(
+                "flatc binary does not match the pinned torappu artifact: "
+                f"expected {contract.TORAPPU_FLATC_SHA256}, got {actual_sha}"
+            )
+        tools.setdefault("flatc", {})
+        if isinstance(tools["flatc"], dict):
+            tools["flatc"].setdefault("sha256", actual_sha)
+            tools["flatc"].setdefault("sourceCommit", contract.TORAPPU_FLATC_COMMIT)
+    else:
+        tools.setdefault("flatc", {"availableAtPackageTime": False})
+    return tools
 
 
 def package_candidate(
@@ -35,6 +84,7 @@ def package_candidate(
     story_stats: dict | None = None,
     summarize_stats: dict | None = None,
     tool_versions: dict | None = None,
+    normalization: dict | None = None,
 ) -> dict:
     """Build zh_CN-excel.zip / zh_CN-levels.zip / zh_CN.zip + manifest.json.
 
@@ -56,20 +106,28 @@ def package_candidate(
     with zipfile.ZipFile(assets[contract.STORY_ASSET], "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for p in sorted((zh / "gamedata/excel").rglob("*")):
             if p.is_file():
-                zf.write(p, f"zh_CN/gamedata/excel/{p.relative_to(zh / 'gamedata/excel')}")
+                _write_deterministic(
+                    zf, p,
+                    f"zh_CN/gamedata/excel/{p.relative_to(zh / 'gamedata/excel')}",
+                )
         story_dir = zh / "gamedata/story"
         if story_dir.exists():
             for p in sorted(story_dir.rglob("*.json")):
-                zf.write(p, f"zh_CN/gamedata/story/{p.relative_to(story_dir)}")
+                _write_deterministic(
+                    zf, p, f"zh_CN/gamedata/story/{p.relative_to(story_dir)}",
+                )
         for name in contract.STORY_INDEX_FILES:
             p = zh / name
             if p.exists():
-                zf.write(p, f"zh_CN/{name}")
+                _write_deterministic(zf, p, f"zh_CN/{name}")
 
     manifest = {
         "pipelineVersion": __version__,
+        "pipeline": _git_provenance(),
+        "contractVersion": contract.CONTRACT_VERSION,
         "source": source_info or {},
-        "tools": tool_versions or {},
+        "tools": _tool_provenance(tool_versions),
+        "normalization": normalization or policy_manifest(),
         "merge": merge_stats or {},
         "story": story_stats or {},
         "summarize": summarize_stats or {},

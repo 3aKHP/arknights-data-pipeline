@@ -1,8 +1,12 @@
+import hashlib
 import json
+import os
 from pathlib import Path
 
+from akdp import contract
 from akdp.merge import merge_trees
-from akdp.validate import validate_candidate, _count_records
+from akdp.package import package_candidate
+from akdp.validate import _count_records, validate_candidate
 
 
 def _write(root: Path, rel: str, content) -> None:
@@ -76,3 +80,38 @@ def test_validate_record_regression(tmp_path):
     res = validate_candidate(cand, baseline=baseline)
     assert not res.ok
     assert any("record regression" in e for e in res.errors)
+
+
+def test_package_is_byte_reproducible(tmp_path):
+    candidate = tmp_path / "candidate" / "zh_CN"
+    _write(candidate, "gamedata/excel/character_table.json", {"char_1": {"rarity": "TIER_5"}})
+    _write(candidate, "gamedata/levels/enemydata/enemy_database.json", {"enemies": []})
+    _write(candidate, "gamedata/story/activities/test.json", {"storyList": []})
+    _write(candidate, "storyinfo.json", {})
+
+    first = tmp_path / "dist-first"
+    second = tmp_path / "dist-second"
+    first_manifest = package_candidate(candidate.parent, first)
+    os.utime(candidate / "gamedata/excel/character_table.json", (1, 1))
+    package_candidate(candidate.parent, second)
+
+    assert first_manifest["contractVersion"] == contract.CONTRACT_VERSION
+    assert first_manifest["normalization"]["version"] == "akdp-normalization/v1"
+    assert first_manifest["pipeline"]["commit"]
+    assert "flatc" in first_manifest["tools"]
+
+    for name in (contract.EXCEL_ASSET, contract.LEVELS_ASSET, contract.STORY_ASSET):
+        assert hashlib.sha256((first / name).read_bytes()).digest() == hashlib.sha256(
+            (second / name).read_bytes()
+        ).digest()
+
+
+def test_validate_rejects_numeric_operator_rarity(tmp_path):
+    candidate = tmp_path / "candidate"
+    _mk_tree(candidate, char_names=["阿米娅"])
+    _write(candidate, "zh_CN/gamedata/excel/character_table.json", {
+        "char_001_bad": {"name": "坏数据", "rarity": 5},
+    })
+    result = validate_candidate(candidate)
+    assert not result.ok
+    assert any("invalid operator rarity" in error for error in result.errors)

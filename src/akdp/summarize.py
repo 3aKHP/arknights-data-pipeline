@@ -14,9 +14,8 @@ API: any OpenAI Chat Completions compatible endpoint, configured via
   LLM_API_KEY   (required when work exists)
   LLM_MODEL     (default: gpt-4o-mini)
 
-Prompts and text extraction are ported verbatim from the original
-ArknightsStoryJson/scripts/summarize.py to preserve stylistic consistency
-with the 1993 pre-existing summaries.
+Prompts and text extraction are kept compatible with the pre-existing summaries;
+the runtime does not fetch or depend on any legacy data repository.
 """
 
 from __future__ import annotations

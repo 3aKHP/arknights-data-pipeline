@@ -1,4 +1,4 @@
-"""Publish step: upload the three assets as a single release on this repo.
+"""Publish step: upload the four assets as a single release on this repo.
 
 The factory repo (3aKHP/arknights-data-pipeline) is its own distribution
 point — one Release per game version, carrying all three zips as assets.
@@ -8,6 +8,7 @@ Tag convention: data-<versionId> (e.g. data-26-08-03-23-34-20_a745fc)
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import time
@@ -19,11 +20,12 @@ from . import contract
 DIST_REPO = "3aKHP/arknights-data-pipeline"
 TAG_PREFIX = "data-"
 
-#: all three assets go into a single release
+#: all assets go into a single release
 RELEASE_ASSETS = [
     contract.EXCEL_ASSET,
     contract.LEVELS_ASSET,
     contract.STORY_ASSET,
+    contract.MANIFEST_ASSET,
 ]
 
 MAX_RETRIES = 3
@@ -34,7 +36,7 @@ def _run_with_retry(cmd: list[str], desc: str) -> None:
     """Run a command, retry on network failures."""
     last_err = ""
     for attempt in range(1, MAX_RETRIES + 1):
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if proc.returncode == 0:
             return
         last_err = f"rc={proc.returncode} stderr={proc.stderr.strip()} stdout={proc.stdout.strip()}"
@@ -44,6 +46,41 @@ def _run_with_retry(cmd: list[str], desc: str) -> None:
             print(f"  retrying in {wait}s...")
             time.sleep(wait)
     raise RuntimeError(f"{desc} failed after {MAX_RETRIES} attempts: {last_err}")
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _release_state(tag: str) -> dict | None:
+    proc = subprocess.run(
+        ["gh", "release", "view", tag, "-R", DIST_REPO,
+         "--json", "isDraft,assets"],
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def _asset_matches(path: Path, remote: dict) -> bool:
+    if remote.get("size") != path.stat().st_size:
+        return False
+    digest = remote.get("digest")
+    return isinstance(digest, str) and digest == f"sha256:{_sha256(path)}"
+
+
+def _missing_or_invalid_assets(state: dict, asset_paths: list[Path]) -> list[Path]:
+    remote = {asset.get("name"): asset for asset in state.get("assets", [])}
+    return [path for path in asset_paths
+            if not _asset_matches(path, remote.get(path.name, {}))]
 
 
 def publish(dist: Path, *, source_id: str, title_suffix: str, dry_run: bool = True) -> None:
@@ -66,26 +103,56 @@ def publish(dist: Path, *, source_id: str, title_suffix: str, dry_run: bool = Tr
         print(f"  title:  Game Data {title_suffix}")
         return
 
-    # Phase 1: create release with notes (no assets yet)
+    # Keep the release draft until every asset has been uploaded and verified.
+    # A failed run therefore cannot become `latest` and the next run can resume.
     notes_file = dist / "release-notes.md"
     notes_file.write_text(
         "```json\n" + json.dumps(manifest, ensure_ascii=False, indent=2) + "\n```",
         encoding="utf-8",
     )
-    _run_with_retry([
-        "gh", "release", "create", tag,
-        "-R", DIST_REPO,
-        "--title", f"Game Data {title_suffix}",
-        "--notes-file", str(notes_file),
-    ], "release create")
+    state = _release_state(tag)
+    if state is None:
+        _run_with_retry([
+            "gh", "release", "create", tag,
+            "-R", DIST_REPO,
+            "--title", f"Game Data {title_suffix}",
+            "--notes-file", str(notes_file),
+            "--draft",
+            "--latest=false",
+        ], "release create draft")
+        state = _release_state(tag) or {"isDraft": True, "assets": []}
+    elif not state.get("isDraft", False) and _missing_or_invalid_assets(state, asset_paths):
+        try:
+            _run_with_retry(
+                ["gh", "release", "edit", tag, "-R", DIST_REPO, "--draft"],
+                "reopen incomplete release",
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"release {tag} is public but incomplete and cannot be reopened; "
+                "repair it manually or publish a new tag before retrying"
+            ) from exc
+        state = _release_state(tag) or {"isDraft": True, "assets": []}
+        if not state.get("isDraft", False):
+            raise RuntimeError(f"release {tag} did not become a draft before repair")
 
-    # Phase 2: upload assets one by one (smallest first, largest last)
-    for asset in sorted(asset_paths, key=lambda p: p.stat().st_size):
+    # Upload assets one by one (smallest first, largest last), resuming any
+    # already verified uploads left by an interrupted run.
+    for asset in sorted(_missing_or_invalid_assets(state, asset_paths),
+                        key=lambda p: p.stat().st_size):
         print(f"  uploading {asset.name} ({asset.stat().st_size / 1e6:.1f} MB)")
         _run_with_retry([
             "gh", "release", "upload", tag,
             "-R", DIST_REPO,
+            "--clobber",
             str(asset),
         ], f"upload {asset.name}")
 
-    print(f"[publish] created {tag} on {DIST_REPO}")
+    state = _release_state(tag)
+    if state is None or _missing_or_invalid_assets(state, asset_paths):
+        raise RuntimeError(f"release {tag} is incomplete or has a digest mismatch")
+    _run_with_retry(
+        ["gh", "release", "edit", tag, "-R", DIST_REPO, "--draft=false", "--latest"],
+        "publish verified release",
+    )
+    print(f"[publish] published {tag} on {DIST_REPO}")

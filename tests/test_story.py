@@ -1,10 +1,9 @@
 import json
-import os
 from pathlib import Path
 
 import pytest
 
-from akdp.check import parse_version_id_from_tag
+from akdp.check import parse_version_id_from_tag, version_changed
 from akdp.story import convert_stories
 
 ASTR = Path(__file__).resolve().parent.parent / "vendor" / "ASTR-Script"
@@ -87,6 +86,13 @@ def test_convert_stories_idempotent(tmp_path):
 
 
 def test_parse_version_id_from_tag():
+    assert parse_version_id_from_tag("data-26-08-03-23-34-20_a745fc") == "26-08-03-23-34-20_a745fc"
     assert parse_version_id_from_tag("upstream-26-08-03-23-34-20_a745fc") == "26-08-03-23-34-20_a745fc"
     assert parse_version_id_from_tag("gamedata-81c6d458a177-v2") == "81c6d458a177"
     assert parse_version_id_from_tag("v1.0.0") is None
+
+
+def test_version_changed_is_scheduler_independent():
+    assert not version_changed("same", "same")
+    assert version_changed("new", "same")
+    assert version_changed("same", "same", force=True)
