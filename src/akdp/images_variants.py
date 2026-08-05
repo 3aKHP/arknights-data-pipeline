@@ -5,8 +5,10 @@ For each artwork in the index, generates two additional resolution tiers:
 - ``large``   — longest side capped at 1024 px (for MCP transport / display)
 - ``preview`` — longest side capped at 256 px (for list / thumbnail views)
 
-Both use Lanczos resampling and never upscale.  The index is updated in-place
-to include metadata (dimensions, bytes, SHA-256) for each variant.
+Both use Lanczos resampling and never upscale.  The index is updated
+atomically — the on-disk index is replaced only when *every* artwork has
+complete large + preview metadata.  Any failure preserves the previous
+valid index.
 """
 
 from __future__ import annotations
@@ -19,6 +21,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from .images_index import write_index_atomic
+
 _logger = logging.getLogger(__name__)
 
 LARGE_MAX = 1024
@@ -27,14 +31,14 @@ PREVIEW_MAX = 256
 
 @dataclass
 class VariantStats:
+    #: artworks where BOTH large and preview were generated successfully
     generated: int = 0
-    skipped: int = 0
-    failed: list[str] = field(default_factory=list)
+    #: list of ``{"skin_id": …, "tier": …, "error": …}``
+    failed: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "generated": self.generated,
-            "skipped": self.skipped,
             "failed": len(self.failed),
             "failed_details": self.failed[:20],
         }
@@ -48,24 +52,19 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _make_variant(src: Path, dst: Path, max_side: int) -> bool:
+def _make_variant(src: Path, dst: Path, max_side: int) -> None:
     """Resize *src* so the longest side ≤ *max_side* and save to *dst*.
 
-    Never upscales — if the original is already smaller, it is copied as-is.
-    Returns True on success, False on failure.
+    Never upscales.  Raises on any I/O or decode error — callers must catch.
     """
-    try:
-        with Image.open(src) as img:
-            w, h = img.size
-            if max(w, h) <= max_side:
-                dst.write_bytes(src.read_bytes())
-            else:
-                thumb = img.copy()
-                thumb.thumbnail((max_side, max_side), Image.LANCZOS)
-                thumb.save(dst, format="PNG")
-        return True
-    except Exception:
-        return False
+    with Image.open(src) as img:
+        w, h = img.size
+        if max(w, h) <= max_side:
+            dst.write_bytes(src.read_bytes())
+        else:
+            thumb = img.copy()
+            thumb.thumbnail((max_side, max_side), Image.LANCZOS)
+            thumb.save(dst, format="PNG")
 
 
 def _measure(path: Path) -> dict:
@@ -82,68 +81,61 @@ def _measure(path: Path) -> dict:
 
 
 def generate_variants(images_dir: Path, index_path: Path) -> VariantStats:
-    """Generate large/preview PNGs and update the index on disk.
+    """Generate large/preview PNGs and atomically update the index.
 
-    Reads ``index.json`` from *index_path*, generates variants for each
-    artwork's ``original`` file in *images_dir*, writes variant metadata back
-    into the index, and saves the updated index.
+    The index is replaced only if **every** artwork produces complete large +
+    preview.  Any failure leaves the previous index untouched.
+
+    Returns stats; ``stats.failed`` non-empty means the index was not advanced.
     """
     index = json.loads(index_path.read_text(encoding="utf-8"))
     artworks = index.get("artworks", {})
     stats = VariantStats()
 
+    # Build updated entries in a staging dict — don't mutate *index* until
+    # we know every artwork succeeded.
+    staged: dict[str, dict] = {}
+
     for skin_id, entry in artworks.items():
         orig_file = entry.get("original", {}).get("file")
         if not orig_file:
-            stats.skipped += 1
+            stats.failed.append({"skin_id": skin_id, "tier": "original", "error": "missing original.file in index"})
             continue
         orig_path = images_dir / orig_file
         if not orig_path.exists():
-            stats.skipped += 1
+            stats.failed.append({"skin_id": skin_id, "tier": "original", "error": f"file not found: {orig_path}"})
             continue
 
+        new_entry = dict(entry)  # shallow copy
+        tier_failed = False
         for tier, max_side in (("large", LARGE_MAX), ("preview", PREVIEW_MAX)):
             dst = images_dir / f"{skin_id}.{tier}.png"
-            if not _make_variant(orig_path, dst, max_side):
-                stats.failed.append(f"{skin_id}.{tier}")
-                continue
-            entry[tier] = _measure(dst)
+            try:
+                _make_variant(orig_path, dst, max_side)
+                new_entry[tier] = _measure(dst)
+            except Exception as exc:  # noqa: BLE001
+                stats.failed.append({
+                    "skin_id": skin_id,
+                    "tier": tier,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+                tier_failed = True
+                break
 
-        stats.generated += 1
+        if not tier_failed:
+            staged[skin_id] = new_entry
+            stats.generated += 1
 
-    index_path.write_text(
-        json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    _logger.info(
-        "images-variants: %d generated, %d skipped, %d failed",
-        stats.generated, stats.skipped, len(stats.failed),
-    )
+    # Only advance the index if there were zero failures.
+    if stats.failed:
+        _logger.warning(
+            "images-variants: %d failures — index NOT advanced (preserving previous valid index)",
+            len(stats.failed),
+        )
+        return stats
+
+    # All succeeded — merge staged entries and write atomically.
+    artworks.update(staged)
+    write_index_atomic(index_path, index)
+    _logger.info("images-variants: %d generated, index updated atomically", stats.generated)
     return stats
-
-
-def compute_delta(
-    current: dict, previous: dict | None,
-) -> dict[str, set[str]]:
-    """Compare two indexes and return the delta set.
-
-    Returns ``{"added": {...}, "changed": {...}, "removed": {...}}`` where each
-    set contains skin IDs.  A skin is *changed* if its ``original.sha256``
-    differs between the two indexes.
-    """
-    prev_artworks = (previous or {}).get("artworks", {})
-    curr_artworks = current.get("artworks", {})
-
-    prev_ids = set(prev_artworks)
-    curr_ids = set(curr_artworks)
-
-    added = curr_ids - prev_ids
-    removed = prev_ids - curr_ids
-
-    changed: set[str] = set()
-    for sid in curr_ids & prev_ids:
-        prev_hash = prev_artworks[sid].get("original", {}).get("sha256")
-        curr_hash = curr_artworks[sid].get("original", {}).get("sha256")
-        if prev_hash != curr_hash:
-            changed.add(sid)
-
-    return {"added": added, "changed": changed, "removed": removed}

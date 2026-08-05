@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -19,6 +20,19 @@ from PIL import Image
 from .images_extract import _load_skin_ids
 
 _logger = logging.getLogger(__name__)
+
+
+def write_index_atomic(path: Path, index: dict) -> None:
+    """Write index.json atomically: temp file in same directory, then os.replace.
+
+    A crash during write leaves either the old or the new file, never a
+    truncated half-written JSON.
+    """
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(
+        json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    os.replace(tmp, path)
 
 
 @dataclass

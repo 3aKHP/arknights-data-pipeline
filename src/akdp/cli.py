@@ -1,6 +1,7 @@
 """akdp CLI: fetch / baseline / merge / validate / package / publish / run.
 
-Image pipeline sub-commands: images-fetch / images-extract.
+Image pipeline sub-commands: images-fetch / images-extract / images-index /
+images-variants.
 """
 
 from __future__ import annotations
@@ -279,9 +280,7 @@ def cmd_images_index(args: argparse.Namespace) -> int:
         args.excel_dir,
         version_id=version_id,
     )
-    (args.workdir / "images-out" / "index.json").write_text(
-        json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    images_index.write_index_atomic(args.workdir / "images-out" / "index.json", index)
     d = stats.to_dict()
     print(f"images-index: {d['indexed']} indexed, {d['skipped']} skipped "
           f"(versionId={version_id})")
@@ -301,10 +300,9 @@ def cmd_images_variants(args: argparse.Namespace) -> int:
 
     stats = images_variants.generate_variants(images_dir, index_path)
     d = stats.to_dict()
-    print(f"images-variants: {d['generated']} generated, {d['skipped']} skipped, "
-          f"{d['failed']} failed")
+    print(f"images-variants: {d['generated']} generated, {d['failed']} failed")
     for f in stats.failed:
-        print(f"[images-variants] FAIL {f}", file=sys.stderr)
+        print(f"[images-variants] FAIL {f['skin_id']}.{f['tier']}: {f['error']}", file=sys.stderr)
     return 1 if stats.failed else 0
 
 

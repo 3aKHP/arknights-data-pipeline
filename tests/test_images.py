@@ -9,8 +9,9 @@ import pytest
 
 from akdp.images_fetch import _changed_bundles, _build_hash_map, _safe_filename
 from akdp.images_extract import _tex_name_to_skin_id, _load_skin_ids
-from akdp.images_index import generate_index, _classify_skin_id
-from akdp.images_variants import generate_variants, compute_delta
+from akdp.images_index import generate_index, write_index_atomic, _classify_skin_id
+from akdp.images_variants import generate_variants, _make_variant
+from akdp.images_diff import compute_delta
 
 
 def test_failed_download_not_marked_unchanged(tmp_path: Path) -> None:
@@ -199,17 +200,14 @@ def test_generate_variants_creates_large_and_preview(tmp_path: Path) -> None:
 
     images_dir = tmp_path / "images-out"
     images_dir.mkdir()
-    # Create an original larger than both thresholds.
     orig = Image.new("RGBA", (2048, 1024), (255, 0, 0, 255))
-    orig_path = images_dir / "char_002_amiya#2.original.png"
-    orig.save(orig_path)
+    orig.save(images_dir / "char_002_amiya#2.original.png")
 
     index = {
         "currentVersion": "v1",
         "artworks": {
             "char_002_amiya#2": {
-                "kind": "base",
-                "shard": "chararts",
+                "kind": "base", "shard": "chararts",
                 "original": {"file": "char_002_amiya#2.original.png", "w": 2048, "h": 1024, "bytes": 100, "sha256": "abc"},
             }
         }
@@ -219,18 +217,16 @@ def test_generate_variants_creates_large_and_preview(tmp_path: Path) -> None:
 
     stats = generate_variants(images_dir, index_path)
     assert stats.generated == 1
+    assert stats.failed == []
 
     updated = json.loads(index_path.read_text("utf-8"))
     entry = updated["artworks"]["char_002_amiya#2"]
-    # Large: max side 1024, so 2048x1024 → 1024x512
     assert entry["large"]["w"] == 1024
     assert entry["large"]["h"] == 512
-    # Preview: max side 256, so 2048x1024 → 256x128
+    assert entry["large"]["file"] == "char_002_amiya#2.large.png"
     assert entry["preview"]["w"] == 256
     assert entry["preview"]["h"] == 128
-    # Files exist
-    assert (images_dir / "char_002_amiya#2.large.png").exists()
-    assert (images_dir / "char_002_amiya#2.preview.png").exists()
+    assert entry["preview"]["file"] == "char_002_amiya#2.preview.png"
 
 
 def test_generate_variants_no_upscale(tmp_path: Path) -> None:
@@ -257,33 +253,112 @@ def test_generate_variants_no_upscale(tmp_path: Path) -> None:
     generate_variants(images_dir, index_path)
     updated = json.loads(index_path.read_text("utf-8"))
     entry = updated["artworks"]["small"]
-    # Both variants should match original dimensions (no upscale).
     assert entry["large"]["w"] == 100
     assert entry["large"]["h"] == 50
     assert entry["preview"]["w"] == 100
     assert entry["preview"]["h"] == 50
 
 
+def test_generate_variants_failure_preserves_index(tmp_path: Path) -> None:
+    """When any variant fails, the old index is left untouched."""
+    from PIL import Image
+
+    images_dir = tmp_path / "images-out"
+    images_dir.mkdir()
+    # One valid original, one missing original.
+    orig = Image.new("RGBA", (2048, 1024), (255, 0, 0, 255))
+    orig.save(images_dir / "good.original.png")
+
+    original_index = {
+        "currentVersion": "v1",
+        "artworks": {
+            "good": {
+                "kind": "base", "shard": "chararts",
+                "original": {"file": "good.original.png", "w": 2048, "h": 1024, "bytes": 100, "sha256": "abc"},
+            },
+            "bad": {
+                "kind": "base", "shard": "chararts",
+                "original": {"file": "missing.original.png", "w": 0, "h": 0, "bytes": 0, "sha256": "xxx"},
+            },
+        }
+    }
+    index_path = images_dir / "index.json"
+    index_path.write_text(json.dumps(original_index), encoding="utf-8")
+
+    stats = generate_variants(images_dir, index_path)
+    # Failure occurred — index NOT advanced (all-or-nothing)
+    assert len(stats.failed) >= 1
+    assert stats.failed[0]["skin_id"] == "bad"
+    # Index on disk is the ORIGINAL (no variant fields added)
+    on_disk = json.loads(index_path.read_text("utf-8"))
+    assert "large" not in on_disk["artworks"]["good"]
+    assert "large" not in on_disk["artworks"]["bad"]
+
+
+def test_generate_variants_json_is_parseable(tmp_path: Path) -> None:
+    """Successful variant generation produces valid parseable JSON."""
+    from PIL import Image
+
+    images_dir = tmp_path / "images-out"
+    images_dir.mkdir()
+    orig = Image.new("RGBA", (512, 512), (0, 0, 255, 255))
+    orig.save(images_dir / "test.original.png")
+
+    index = {
+        "currentVersion": "v1",
+        "artworks": {
+            "test": {
+                "kind": "base", "shard": "chararts",
+                "original": {"file": "test.original.png", "w": 512, "h": 512, "bytes": 10, "sha256": "x"},
+            }
+        }
+    }
+    index_path = images_dir / "index.json"
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+
+    stats = generate_variants(images_dir, index_path)
+    assert stats.generated == 1
+
+    # Parseable + all three tiers complete with all five fields
+    updated = json.loads(index_path.read_text("utf-8"))
+    for tier in ("original", "large", "preview"):
+        v = updated["artworks"]["test"][tier]
+        for field in ("file", "w", "h", "bytes", "sha256"):
+            assert field in v, f"missing {field} in {tier}"
+
+
+# ---------------------------------------------------------------------------
+# images_diff tests
+# ---------------------------------------------------------------------------
+
 def test_compute_delta() -> None:
     """Delta computation correctly identifies added/changed/removed."""
     current = {
         "artworks": {
-            "a": {"original": {"sha256": "aaa"}},
-            "b": {"original": {"sha256": "bbb_new"}},
-            "c": {"original": {"sha256": "ccc"}},
+            "a": {"original": {"sha256": "aaa"}, "large": {"sha256": "la"}, "preview": {"sha256": "pa"}},
+            "b": {"original": {"sha256": "bbb"}, "large": {"sha256": "lb2"}, "preview": {"sha256": "pb"}},
+            "c": {"original": {"sha256": "ccc"}, "large": {"sha256": "lc"}, "preview": {"sha256": "pc"}},
         }
     }
     previous = {
         "artworks": {
-            "a": {"original": {"sha256": "aaa"}},       # unchanged
-            "b": {"original": {"sha256": "bbb_old"}},   # changed
-            "d": {"original": {"sha256": "ddd"}},       # removed
+            "a": {"original": {"sha256": "aaa"}, "large": {"sha256": "la"}, "preview": {"sha256": "pa"}},  # unchanged
+            "b": {"original": {"sha256": "bbb"}, "large": {"sha256": "lb1"}, "preview": {"sha256": "pb"}},  # large changed
+            "d": {"original": {"sha256": "ddd"}, "large": {"sha256": "ld"}, "preview": {"sha256": "pd"}},  # removed
         }
     }
     delta = compute_delta(current, previous)
     assert delta["added"] == {"c"}
-    assert delta["changed"] == {"b"}
+    assert delta["changed"] == {"b"}  # large sha256 differs
     assert delta["removed"] == {"d"}
+
+
+def test_compute_delta_preview_only_change() -> None:
+    """Change in only preview sha256 still triggers 'changed'."""
+    current = {"artworks": {"x": {"original": {"sha256": "same"}, "large": {"sha256": "same"}, "preview": {"sha256": "new"}}}}
+    previous = {"artworks": {"x": {"original": {"sha256": "same"}, "large": {"sha256": "same"}, "preview": {"sha256": "old"}}}}
+    delta = compute_delta(current, previous)
+    assert delta["changed"] == {"x"}
 
 
 def test_compute_delta_no_previous() -> None:
@@ -293,3 +368,17 @@ def test_compute_delta_no_previous() -> None:
     assert delta["added"] == {"a", "b"}
     assert delta["changed"] == set()
     assert delta["removed"] == set()
+
+
+# ---------------------------------------------------------------------------
+# write_index_atomic test
+# ---------------------------------------------------------------------------
+
+def test_write_index_atomic_replaces_cleanly(tmp_path: Path) -> None:
+    """Atomic write produces valid JSON and leaves no temp file."""
+    path = tmp_path / "index.json"
+    write_index_atomic(path, {"currentVersion": "v1", "artworks": {}})
+
+    data = json.loads(path.read_text("utf-8"))
+    assert data["currentVersion"] == "v1"
+    assert not (tmp_path / ".index.json.tmp").exists()

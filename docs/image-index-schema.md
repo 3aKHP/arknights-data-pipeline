@@ -189,3 +189,20 @@ PNG → ZIP 压缩比 ≈ 0.996（PNG 已内建 DEFLATE，zip 二次压缩收益
 客户端可以按需下载子集（例如只下 `*-large` + `*-preview`，跳过 `*-original`
 以节省 ~3.6 GB 磁盘）。索引的 `shards` 字段列出全部 6 个分片，客户端自行决定
 下载哪些。
+
+## 6. Release tag 隔离（Phase D 约束）
+
+图片 Release 和 JSON 数据 Release 共享同一个 GitHub 仓库，但**不能共享
+`latest` 指针**。两种产品线必须按 tag 前缀显式发现：
+
+- JSON 数据 Release：tag 前缀 `data-`，现有 `check.latest_published_version()`
+  和 `publish.py` 已按此约定工作。
+- 图片 Release：tag 前缀 `images-`（baseline 用 `images-baseline-<ver>`，
+  delta 用 `images-<ver>`）。
+
+Phase D 的图片发布逻辑**不得**使用无 tag 的 `gh release view` / GitHub
+`/releases/latest` 端点查找上一份图片 Release，必须显式按 `images-*` 前缀
+过滤。同理，JSON 管线的检测逻辑也不应受图片 Release 抢占 `latest` 影响。
+
+现有 `check.latest_published_version()` 已通过 tag 正则
+`(?:data|upstream|gamedata)-...` 限定前缀，不受 `images-*` tag 干扰。
