@@ -4,7 +4,7 @@ Wraps ASTR-Script (vendor/ASTR-Script, pinned submodule):
   - func.getEvents / getExtraAvg enumerate stories from story_review tables
   - jsonconvert.reader parses one avg script into {storyList, ...}
 
-The vendored code expects an ArknightsGameData layout (`<root>/cn/gamedata/...`),
+The vendored code expects a client-data layout (`<root>/cn/gamedata/...`),
 so we expose the candidate's zh_CN tree through a `cn` symlink.
 """
 

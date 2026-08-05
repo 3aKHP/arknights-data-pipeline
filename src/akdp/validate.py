@@ -68,6 +68,27 @@ def validate_candidate(
         if not (zh / "gamedata/levels" / rel).exists():
             res.errors.append(f"missing required levels file: gamedata/levels/{rel}")
 
+    # Reject the numeric rarity shape that previously broke PRTS consumers.
+    char_path = zh / "gamedata/excel/character_table.json"
+    if char_path.is_file():
+        try:
+            table = json.loads(char_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            table = None
+        if isinstance(table, dict):
+            bad_rarity = [
+                cid for cid, data in table.items()
+                if isinstance(data, dict) and cid.startswith("char_")
+                and data.get("rarity") is not None
+                and (not isinstance(data["rarity"], str)
+                     or not data["rarity"].startswith("TIER_"))
+            ]
+            if bad_rarity:
+                res.errors.append(
+                    "invalid operator rarity (expected TIER_* string): "
+                    + ", ".join(bad_rarity[:10])
+                )
+
     # --- gate 2: every .json is decodable UTF-8 JSON
     bad = 0
     for p in zh.rglob("*.json"):

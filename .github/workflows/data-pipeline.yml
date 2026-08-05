@@ -3,7 +3,13 @@ name: Data Pipeline
 on:
   schedule:
     - cron: '0 */2 * * *'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Run the full path even when versionId is unchanged"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: data-pipeline
@@ -32,13 +38,23 @@ jobs:
         run: pip install uv
 
       - name: Sync dependencies
-        run: uv sync --all-extras
+        run: uv sync --all-extras --locked
+
+      - name: Run pipeline unit tests
+        run: uv run pytest tests -q
 
       - name: Setup flatc
         run: |
-          curl -sL -o flatc \
+          curl -fsSL -o flatc \
             https://raw.githubusercontent.com/MooncellWiki/torappu/37e645f4528248b639b63c35dbb63ee7ae64a315/bin/flatc
+          test -s flatc
+          echo "b5adf3dbc4867a3f08acf6e30f32671f114d189093da07453ff2764c6acdd925  flatc" | sha256sum -c -
           chmod +x flatc && sudo mv flatc /usr/local/bin/flatc
 
       - name: Run pipeline
-        run: uv run akdp --workdir work run --publish
+        env:
+          FORCE_RUN: ${{ inputs.force || false }}
+        run: |
+          args=(--workdir work run --publish)
+          if [[ "$FORCE_RUN" == "true" ]]; then args+=(--force); fi
+          uv run akdp "${args[@]}"

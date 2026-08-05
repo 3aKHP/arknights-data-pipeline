@@ -7,8 +7,11 @@ don't produce no-op releases.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import subprocess
+
+from . import contract
 
 
 def fetch_remote_version(server: str = "cn") -> dict:
@@ -59,12 +62,40 @@ def parse_version_id_from_tag(tag: str) -> str | None:
 DIST_REPO = "3aKHP/arknights-data-pipeline"
 
 
+def version_changed(
+    remote_version: str | None,
+    published_version: str | None,
+    *,
+    force: bool = False,
+) -> bool:
+    """Return whether the pipeline should run, independently of the scheduler."""
+    return force or remote_version != published_version
+
+
 def latest_published_version() -> str | None:
-    """Read the versionId embedded in the factory repo's latest release tag."""
+    """Read the latest complete, non-draft factory release version."""
     proc = subprocess.run(
-        ["gh", "release", "view", "-R", DIST_REPO, "--json", "tagName", "--jq", ".tagName"],
-        capture_output=True, text=True,
+        [
+            "gh", "release", "view", "-R", DIST_REPO,
+            "--json", "tagName,isDraft,assets",
+        ],
+        capture_output=True, text=True, check=False,
     )
     if proc.returncode != 0:
         return None
-    return parse_version_id_from_tag(proc.stdout.strip())
+    try:
+        value = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    if value.get("isDraft"):
+        return None
+    names = {asset.get("name") for asset in value.get("assets", [])}
+    required = {
+        contract.EXCEL_ASSET,
+        contract.LEVELS_ASSET,
+        contract.STORY_ASSET,
+        contract.MANIFEST_ASSET,
+    }
+    if not required.issubset(names):
+        return None
+    return parse_version_id_from_tag(value.get("tagName", ""))

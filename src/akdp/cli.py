@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -27,6 +29,7 @@ _load_dotenv()
 
 from . import baseline as baseline_mod
 from . import check as check_mod
+from . import contract
 from . import fetch as fetch_mod
 from . import merge as merge_mod
 from . import package as package_mod
@@ -34,14 +37,14 @@ from . import publish as publish_mod
 from . import story as story_mod
 from . import summarize as summarize_mod
 from . import validate as validate_mod
-from .normalize import normalize_extraction
+from .normalize import normalize_extraction, policy_manifest
 
 
 def _load_probes(workdir: Path, args: argparse.Namespace) -> dict:
     probes: dict = {}
-    pf = workdir / "probes.json"
-    if pf.exists():
-        probes = json.loads(pf.read_text(encoding="utf-8"))
+    for pf in (getattr(args, "probes_file", None), workdir / "probes.json"):
+        if pf is not None and pf.exists():
+            probes.update(json.loads(pf.read_text(encoding="utf-8")))
     if args.probe_operator:
         probes.setdefault("operators", []).extend(args.probe_operator)
     if args.probe_event:
@@ -58,6 +61,24 @@ def _tool_versions() -> dict:
             versions[pkg] = importlib.metadata.version(pkg)
         except importlib.metadata.PackageNotFoundError:
             pass
+    astr = Path("vendor/ASTR-Script") / ".git"
+    if astr.exists():
+        proc = subprocess.run(
+            ["git", "-C", str(astr.parent), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=False,
+        )
+        if proc.returncode == 0:
+            versions["ASTR-Script"] = {
+                "sourceCommit": proc.stdout.strip(),
+                "source": "050644zf/ASTR-Script",
+            }
+    flatc = shutil.which("flatc")
+    if flatc:
+        proc = subprocess.run([flatc, "--version"], capture_output=True, text=True, check=False)
+        versions["flatc"] = {
+            "version": proc.stdout.strip() or proc.stderr.strip(),
+            "sourceCommit": contract.TORAPPU_FLATC_COMMIT,
+        }
     return versions
 
 
@@ -100,7 +121,7 @@ def cmd_merge(args: argparse.Namespace) -> int:
 def cmd_check(args: argparse.Namespace) -> int:
     remote = check_mod.fetch_remote_version(args.server)
     published = check_mod.latest_published_version()
-    changed = remote["versionId"] != published
+    changed = check_mod.version_changed(remote["versionId"], published)
     print(f"remote versionId:    {remote['versionId']} (manifest {remote['manifestVersion']})")
     print(f"published versionId: {published}")
     print("CHANGED" if changed else "UNCHANGED")
@@ -164,6 +185,7 @@ def cmd_package(args: argparse.Namespace) -> int:
         story_stats=story_stats,
         summarize_stats=summarize_stats,
         tool_versions=_tool_versions(),
+        normalization=policy_manifest(),
     )
     for name, meta in manifest["assets"].items():
         print(f"packaged {name} ({meta['size'] / 1e6:.1f} MB, sha256 {meta['sha256'][:12]}…)")
@@ -186,7 +208,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not args.force:
         remote = check_mod.fetch_remote_version(args.server)
         published = check_mod.latest_published_version()
-        if remote["versionId"] == published:
+        if not check_mod.version_changed(
+            remote["versionId"], published, force=args.force,
+        ):
             print(f"[run] versionId unchanged ({published}), nothing to do")
             return 0
         print(f"[run] version changed: {published} -> {remote['versionId']}")
@@ -234,6 +258,7 @@ def main() -> int:
         p.set_defaults(func=func)
 
     p = sub.add_parser("validate", help="run validation gates")
+    p.add_argument("--probes-file", type=Path, default=Path("config/probes.json"))
     p.add_argument("--probe-operator", action="append")
     p.add_argument("--probe-event", action="append")
     p.set_defaults(func=cmd_validate)
@@ -248,6 +273,7 @@ def main() -> int:
     p.add_argument("--publish", action="store_true", help="auto-publish after successful run")
     p.add_argument("--attempts", type=int, default=5)
     p.add_argument("--astr-path", type=Path, default=Path("vendor/ASTR-Script"))
+    p.add_argument("--probes-file", type=Path, default=Path("config/probes.json"))
     p.add_argument("--probe-operator", action="append")
     p.add_argument("--probe-event", action="append")
     p.set_defaults(func=cmd_run)

@@ -92,7 +92,7 @@ def load_hot_update_version(extract_root: Path) -> dict:
         except (json.JSONDecodeError, UnicodeDecodeError):
             continue
         return {
-            "path": str(hul),
+            "path": hul.relative_to(extract_root).as_posix(),
             "versionId": data.get("versionId"),
             "manifestVersion": data.get("manifestVersion"),
             "abCount": len(data.get("abInfos") or []),

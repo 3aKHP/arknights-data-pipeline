@@ -13,7 +13,7 @@
 2. **可验证**：每次发布附带 manifest（源版本、工具版本、包哈希、记录指标、
    排除项、合并统计）；校验门不过则不发布（fail-closed）。
 3. **可回滚**：Release 序列即历史档案，回滚 = 将旧 Release 重新标记为 latest。
-4. **统一分发**：一个 `data-<versionId>` Release 带三个 asset，替代旧的两个 fork
+4. **统一分发**：一个 `data-<versionId>` Release 带四个 asset，替代旧的两个 fork
    仓库 + 两种 tag 前缀的历史模式。
 
 ## 流水线
@@ -27,17 +27,20 @@ story      剧情 txt → JSON（vendor/ASTR-Script，含大小写错位修复�
 summarize  增量 LLM 双级别摘要（summaries.json + event_summaries.json）
 validate   校验门：契约文件、探针、记录数回归、UTF-8、累积不变量、剧情转换完整性
 package    三个 zip + manifest.json
-publish    data-* 单 Release 三 asset，发到工厂仓库自身（gh CLI）
+publish    data-* 单 Release 四 asset，发到工厂仓库自身（gh CLI）
 ```
 
 ## 分发
 
-每个游戏版本一个 Release（`data-<versionId>`），带三个 asset：
+每个游戏版本一个 Release（`data-<versionId>`），保持 draft 直到校验完成，带四个 asset：
 - `zh_CN-excel.zip` — 数值表
 - `zh_CN-levels.zip` — 关卡数据
 - `zh_CN.zip` — excel + 剧情 JSON + ASTR 索引 + LLM 摘要
+- `manifest.json` — 契约版本、源版本、校验指标和三个包的大小/SHA-256
 
-Release notes 即 manifest.json（源版本、工具版本、合并统计、摘要统计、校验指标、包哈希）。
+Release notes 同步内嵌 manifest，方便人工审计。manifest 还记录流水线 commit、
+ASTR/flatc 等转换器来源、归一化/排除政策以及每个包的大小和 SHA-256；消费端优先
+校验 manifest asset，旧 Release 没有该 asset 时保留兼容读取。
 
 ### LLM 配置
 
@@ -55,11 +58,18 @@ LLM_MODEL=deepseek-v4-flash                # 或任意兼容模型
 ## 自动化（GitHub Actions）
 
 `.github/workflows/data-pipeline.yml` 每 2 小时运行一次：`check` 短路时 ~45 秒退出，
-有新版本时自动跑完整链路并 `publish`。需要以下 Repository Secrets：
+有新版本时自动跑完整链路并 `publish`。每次运行先执行 `tests/`，发布校验默认启用
+`config/probes.json` 中的代表性干员和活动探针。需要以下 Repository Secrets：
 
 - `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL`
 
-也可通过 Actions 页面手动触发（workflow_dispatch）。
+也可通过 Actions 页面手动触发（workflow_dispatch）；勾选 `force` 可在 versionId
+未变化时演练完整路径，不依赖等待下一次上游版本更新。
+
+上游 HG CDN 是唯一新鲜度信号；第三方成品仓库只作为人工对照/应急调查，不会被
+自动切换。最新已发布 Release 是累积基线和运行时回滚点，抓取、格式、探针或发布
+校验任一步失败都会保留上一代数据。完整责任边界与人工切换规则见
+[`SOURCE_STRATEGY.md`](SOURCE_STRATEGY.md)。
 
 ## 本地使用
 
@@ -84,7 +94,7 @@ workdir 结构：
 
 ```
 work/
-  baseline/     # 基线（从最新 Release 解压；首次 fallback 到旧 fork 仓库）
+  baseline/     # 基线（从最新工厂 Release 解压；无 Release 时须人工预置）
   extract/      # arkprts 原始解包产物
   normalized/   # cn/ → zh_CN/ 布局映射后的中间产物
   candidate/    # 合并后的候选发布树
