@@ -380,6 +380,38 @@ def cmd_images_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_images_run(args: argparse.Namespace) -> int:
+    """Orchestrate the full image pipeline: fetch → extract → index → variants → package → publish."""
+    if not args.force:
+        remote = check_mod.fetch_remote_version(args.server)
+        published = check_mod.latest_published_image_version()
+        if not check_mod.version_changed(
+            remote["versionId"], published, force=args.force,
+        ):
+            print(f"[images-run] versionId unchanged ({published}), nothing to do")
+            return 0
+        print(f"[images-run] version changed: {published} -> {remote['versionId']}")
+
+    steps = (
+        cmd_images_fetch,
+        cmd_images_extract,
+        cmd_images_index,
+        cmd_images_variants,
+        cmd_images_package,
+    )
+    for cmd in steps:
+        rc = cmd(args)
+        if rc != 0:
+            print(f"[images-run] step {cmd.__name__} failed, stopping (fail-closed)", file=sys.stderr)
+            return rc
+
+    if getattr(args, "publish", False):
+        print("[images-run] auto-publishing")
+        args.execute = True
+        return cmd_images_publish(args)
+    return 0
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     if not args.force:
         remote = check_mod.fetch_remote_version(args.server)
@@ -465,6 +497,13 @@ def main() -> int:
     p = sub.add_parser("images-publish", help="publish image releases (dry-run by default)")
     p.add_argument("--execute", action="store_true", help="actually create GitHub releases")
     p.set_defaults(func=cmd_images_publish)
+
+    p = sub.add_parser("images-run", help="full image pipeline: fetch → extract → index → variants → package → publish")
+    p.add_argument("--force", action="store_true", help="run even if versionId is unchanged")
+    p.add_argument("--publish", action="store_true", help="auto-publish after successful run")
+    p.add_argument("--excel-dir", type=Path, required=True,
+                   help="path to gamedata/excel/")
+    p.set_defaults(func=cmd_images_run)
 
     p = sub.add_parser("run", help="check -> baseline -> fetch -> merge -> story -> summarize -> validate -> package")
     p.add_argument("--clobber", action="store_true")

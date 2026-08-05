@@ -96,3 +96,29 @@ def latest_published_version() -> str | None:
     if not required.issubset(names):
         return None
     return parse_version_id_from_tag(value.get("tagName", ""))
+
+
+def latest_published_image_version() -> str | None:
+    """Read the latest published image delta release version.
+
+    Searches for ``images-<versionId>`` tags (excluding ``images-baseline-*``).
+    Returns the versionId, or None if no image delta Release exists yet.
+    """
+    proc = subprocess.run(
+        ["gh", "release", "list", "-R", DIST_REPO,
+         "--json", "tagName,isDraft", "--limit", "100"],
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    try:
+        releases = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    for rel in releases:
+        if rel.get("isDraft"):
+            continue
+        tag = rel.get("tagName", "")
+        if tag.startswith("images-") and not tag.startswith("images-baseline-"):
+            return tag.removeprefix("images-")
+    return None

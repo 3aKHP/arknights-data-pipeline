@@ -51,10 +51,22 @@ jobs:
           echo "b5adf3dbc4867a3f08acf6e30f32671f114d189093da07453ff2764c6acdd925  flatc" | sha256sum -c -
           chmod +x flatc && sudo mv flatc /usr/local/bin/flatc
 
-      - name: Run pipeline
+      - name: Run JSON pipeline
         env:
           FORCE_RUN: ${{ inputs.force || false }}
         run: |
           args=(--workdir work run --publish)
           if [[ "$FORCE_RUN" == "true" ]]; then args+=(--force); fi
           uv run akdp "${args[@]}"
+
+      - name: Run image pipeline
+        env:
+          FORCE_RUN: ${{ inputs.force || false }}
+        run: |
+          if [ -d work/candidate/zh_CN/gamedata/excel ]; then
+            args=(--workdir work images-run --publish --excel-dir work/candidate/zh_CN/gamedata/excel)
+            if [[ "$FORCE_RUN" == "true" ]]; then args+=(--force); fi
+            uv run akdp "${args[@]}"
+          else
+            echo "JSON pipeline short-circuited (no new data); skipping images"
+          fi
