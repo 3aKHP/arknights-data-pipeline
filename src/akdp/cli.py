@@ -197,6 +197,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             return rc
     if getattr(args, "publish", False):
         print("[run] auto-publishing")
+        args.execute = True
         return cmd_publish(args)
     return 0
 
