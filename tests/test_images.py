@@ -12,6 +12,7 @@ from akdp.images_extract import _tex_name_to_skin_id, _load_skin_ids
 from akdp.images_index import generate_index, write_index_atomic, _classify_skin_id
 from akdp.images_variants import generate_variants, _make_variant
 from akdp.images_diff import compute_delta
+from akdp.images_package import package_images
 
 
 def test_failed_download_not_marked_unchanged(tmp_path: Path) -> None:
@@ -382,3 +383,128 @@ def test_write_index_atomic_replaces_cleanly(tmp_path: Path) -> None:
     data = json.loads(path.read_text("utf-8"))
     assert data["currentVersion"] == "v1"
     assert not (tmp_path / ".index.json.tmp").exists()
+
+
+# ---------------------------------------------------------------------------
+# images_package tests
+# ---------------------------------------------------------------------------
+
+def _mk_image(dir_path: Path, name: str, size: tuple[int, int] = (512, 512)) -> Path:
+    """Create a minimal PNG and return its path."""
+    from PIL import Image
+    p = dir_path / name
+    Image.new("RGBA", size, (255, 0, 0, 255)).save(p)
+    return p
+
+
+def _mk_index(images_dir: Path, entries: dict) -> Path:
+    """Write an index.json into images_dir from a {skinId: {shard, sha256s}} spec."""
+    import hashlib
+    artworks = {}
+    for sid, spec in entries.items():
+        shard = spec.get("shard", "chararts")
+        entry = {"kind": "skin" if "@" in sid else "base", "shard": shard}
+        for tier in ("original", "large", "preview"):
+            fname = f"{sid}.{tier}.png"
+            _mk_image(images_dir, fname)
+            stat = (images_dir / fname).stat()
+            entry[tier] = {
+                "file": fname, "w": 512, "h": 512,
+                "bytes": stat.st_size,
+                "sha256": spec.get(tier, hashlib.sha256(b"x").hexdigest()),
+            }
+        artworks[sid] = entry
+    index = {"currentVersion": "v1", "artworks": artworks}
+    path = images_dir / "index.json"
+    write_index_atomic(path, index)
+    return path
+
+
+def test_package_baseline_creates_shards_and_sentinel(tmp_path: Path) -> None:
+    """First run (no prev index) → baseline mode with 6 shards + sentinel."""
+    images_dir = tmp_path / "images-out"
+    images_dir.mkdir()
+    dist_dir = tmp_path / "images-dist"
+
+    _mk_index(images_dir, {
+        "char_002_amiya#2": {"shard": "chararts"},
+        "char_002_amiya@epoque#4": {"shard": "skinpack"},
+    })
+
+    final_index, stats = package_images(images_dir, dist_dir, None, "v1")
+
+    assert stats.mode == "baseline"
+    assert stats.baseline_version == "v1"
+    assert final_index["schemaVersion"] == "akdp-images/v1"
+    assert final_index["baselineVersion"] == "v1"
+    # All entries have sinceVersion
+    for entry in final_index["artworks"].values():
+        assert entry["sinceVersion"] == "v1"
+    # Shards exist
+    assert len(stats.shards) >= 2  # at least chararts-original and skinpack-original
+    for shard_name in final_index["shards"].values():
+        assert (dist_dir / shard_name).exists()
+    # Sentinel delta zip exists
+    assert (dist_dir / "images-delta-v1.zip").exists()
+    # Final index is valid JSON
+    idx = json.loads((dist_dir / "index.json").read_text("utf-8"))
+    assert idx["schemaVersion"] == "akdp-images/v1"
+
+
+def test_package_delta_only_includes_changes(tmp_path: Path) -> None:
+    """Delta run → only new/changed PNGs in delta zip, prev index consulted."""
+    images_dir = tmp_path / "images-out"
+    images_dir.mkdir()
+    dist_dir = tmp_path / "images-dist"
+    prev_dir = tmp_path / "images-prev"
+    prev_dir.mkdir()
+
+    # Create current index with 3 artworks.
+    _mk_index(images_dir, {
+        "a#1": {"shard": "chararts", "original": "aa", "large": "la", "preview": "pa"},
+        "b#1": {"shard": "chararts", "original": "bb_new", "large": "lb", "preview": "pb"},
+        "c#1": {"shard": "skinpack", "original": "cc", "large": "lc", "preview": "pc"},
+    })
+
+    # Previous index: a unchanged, b changed, c absent (new), d removed.
+    import hashlib
+    prev_index = {
+        "schemaVersion": "akdp-images/v1",
+        "baselineVersion": "v0",
+        "currentVersion": "v0",
+        "shards": {"chararts-original": "old.zip"},
+        "artworks": {
+            "a#1": {"sinceVersion": "v0", "shard": "chararts",
+                    "original": {"sha256": "aa"}, "large": {"sha256": "la"}, "preview": {"sha256": "pa"}},
+            "b#1": {"sinceVersion": "v0", "shard": "chararts",
+                    "original": {"sha256": "bb_old"}, "large": {"sha256": "lb"}, "preview": {"sha256": "pb"}},
+            "d#1": {"sinceVersion": "v0", "shard": "chararts",
+                    "original": {"sha256": "dd"}, "large": {"sha256": "ld"}, "preview": {"sha256": "pd"}},
+        },
+    }
+    write_index_atomic(prev_dir / "index.json", prev_index)
+
+    final_index, stats = package_images(
+        images_dir, dist_dir, prev_dir / "index.json", "v1",
+    )
+
+    assert stats.mode == "delta"
+    assert stats.baseline_version == "v0"  # inherited
+    assert stats.delta_added == 1  # c#1
+    assert stats.delta_changed == 1  # b#1
+    assert stats.delta_removed == 1  # d#1
+
+    # sinceVersion: a inherited from prev, b inherited, c is new
+    assert final_index["artworks"]["a#1"]["sinceVersion"] == "v0"
+    assert final_index["artworks"]["c#1"]["sinceVersion"] == "v1"
+
+    # Delta zip exists and is small (only 2 artworks × 3 variants = 6 files)
+    delta_zip = dist_dir / "images-delta-v1.zip"
+    assert delta_zip.exists()
+    import zipfile
+    with zipfile.ZipFile(delta_zip) as zf:
+        names = zf.namelist()
+    assert len(names) == 6  # b#1 (3) + c#1 (3)
+
+    # No baseline shards should be created in delta mode
+    assert not list(dist_dir.glob("images-baseline-*.zip"))
