@@ -1,6 +1,5 @@
 import hashlib
 import json
-import pytest
 from pathlib import Path
 
 from akdp import contract, publish
@@ -87,9 +86,12 @@ def test_force_runs_even_when_version_is_unchanged():
     assert version_changed("same", "same", force=True)
 
 
-def test_publish_rejects_public_incomplete_release_without_reopen(tmp_path, monkeypatch):
+def test_publish_repairs_public_incomplete_release_without_reopen(tmp_path, monkeypatch):
     dist, hashes = _make_dist(tmp_path)
-    states = [{"isDraft": False, "assets": []}]
+    states = [
+        {"isDraft": False, "assets": []},
+        _complete_state(dist, hashes, draft=False),
+    ]
     commands: list[list[str]] = []
     monkeypatch.setattr(publish, "_release_state", lambda _tag: states.pop(0))
     monkeypatch.setattr(
@@ -98,7 +100,7 @@ def test_publish_rejects_public_incomplete_release_without_reopen(tmp_path, monk
         lambda command, _description: commands.append(command),
     )
 
-    with pytest.raises(RuntimeError, match="cannot be repaired automatically"):
-        publish.publish(dist, source_id="test", title_suffix="test", dry_run=False)
+    publish.publish(dist, source_id="test", title_suffix="test", dry_run=False)
 
-    assert commands == []
+    assert any("--clobber" in command for command in commands)
+    assert not any("--draft" in command for command in commands)

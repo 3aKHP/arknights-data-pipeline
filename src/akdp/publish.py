@@ -114,10 +114,11 @@ def publish(dist: Path, *, source_id: str, title_suffix: str, dry_run: bool = Tr
         ], "release create draft")
         state = _release_state(tag) or {"isDraft": True, "assets": []}
     elif not state.get("isDraft", False) and _missing_or_invalid_assets(state, asset_paths):
-        raise RuntimeError(
-            f"release {tag} is public but incomplete and cannot be repaired automatically; "
-            "repair it manually or publish a new tag before retrying"
-        )
+        # GitHub cannot convert a public release back to draft. Upload the
+        # manifest first (it is the smallest asset), then replace invalid
+        # data assets; consumers that enforce the manifest fail closed while
+        # this repair is in progress.
+        print(f"  repairing public incomplete release {tag} in place")
 
     # Upload assets one by one (smallest first, largest last), resuming any
     # already verified uploads left by an interrupted run.
