@@ -9,7 +9,6 @@ pattern as ``check.py``).
 from __future__ import annotations
 
 import asyncio
-import io
 import json
 import logging
 from dataclasses import dataclass, field
@@ -22,9 +21,6 @@ _logger = logging.getLogger(__name__)
 
 #: AB-path prefixes whose bundles contain operator art (Texture2D/Sprite).
 ART_PREFIXES: tuple[str, ...] = ("chararts/", "skinpack/")
-
-#: Prefixes to skip entirely (no textures, or out of scope).
-SKIP_PREFIXES: tuple[str, ...] = ("charpack/",)
 
 
 @dataclass
@@ -42,66 +38,19 @@ class FetchStats:
         }
 
 
-def _load_hot_update_list(server: str = "cn") -> dict:
-    """Fetch the current hot_update_list from HG CDN (network layer only)."""
-    session = netn.NetworkSession(default_server=server)
-
-    async def _go():
-        platform = session.default_platform or "Android"
-        try:
-            if not session.versions[(server, platform)]:
-                await session.load_version_config(server, platform)
-            url = (
-                session.domains[server]["hu"]
-                + f"/{platform}/assets/{session.versions[(server, platform)]['resVersion']}/"
-                + asset_path_to_server_filename("hot_update_list.json")
-            )
-            async with session.session.get(url) as response:
-                response.raise_for_status()
-                return json.loads(await response.read())
-        finally:
-            await session.session.close()
-
-    return asyncio.run(_go())
+def _safe_filename(ab_path: str) -> str:
+    """Convert an AB path to a cache filename."""
+    return ab_path.replace("/", "_").replace("#", "__") + ".ab"
 
 
-async def _download_bundle(path: str, server: str = "cn") -> bytes:
-    """Download and unzip a single AB bundle, returning raw AB bytes."""
-    session = netn.NetworkSession(default_server=server)
-    try:
-        platform = session.default_platform or "Android"
-        if not session.versions[(server, platform)]:
-            await session.load_version_config(server, platform)
-        url = (
-            session.domains[server]["hu"]
-            + f"/{platform}/assets/{session.versions[(server, platform)]['resVersion']}/"
-            + asset_path_to_server_filename(path)
-        )
-        async with session.session.get(url) as response:
-            response.raise_for_status()
-            zipped = await response.read()
-        return unzip_only_file(zipped)
-    finally:
-        await session.session.close()
-
-
-async def _download_many(
-    paths: list[str], server: str, max_concurrency: int = 8
-) -> dict[str, bytes]:
-    """Download multiple bundles with bounded concurrency."""
-    sem = asyncio.Semaphore(max_concurrency)
-    results: dict[str, bytes] = {}
-    errors: dict[str, str] = {}
-
-    async def _one(p: str) -> None:
-        async with sem:
-            try:
-                results[p] = await _download_bundle(p, server)
-            except Exception as exc:  # noqa: BLE001
-                errors[p] = f"{type(exc).__name__}: {exc}"
-
-    await asyncio.gather(*(_one(p) for p in paths))
-    return results, errors  # type: ignore[return-value]
+def _asset_url(session: netn.NetworkSession, path: str, server: str) -> str:
+    """Build the CDN URL for a single asset path on a pre-loaded session."""
+    platform = session.default_platform or "Android"
+    return (
+        session.domains[server]["hu"]
+        + f"/{platform}/assets/{session.versions[(server, platform)]['resVersion']}/"
+        + asset_path_to_server_filename(path)
+    )
 
 
 def _changed_bundles(
@@ -122,6 +71,76 @@ def _changed_bundles(
     return to_download, unchanged
 
 
+async def _run_fetch(
+    cache_dir: Path,
+    server: str,
+    prev_hashes: dict[str, str],
+) -> tuple[FetchStats, dict]:
+    """Single async entry point: shared session for all network I/O."""
+    session = netn.NetworkSession(default_server=server)
+    try:
+        platform = session.default_platform or "Android"
+        if not session.versions[(server, platform)]:
+            await session.load_version_config(server, platform)
+
+        # Fetch hot_update_list.
+        hul_url = _asset_url(session, "hot_update_list.json", server)
+        async with session.session.get(hul_url) as response:
+            response.raise_for_status()
+            hot_update = json.loads(await response.read())
+
+        version_id = hot_update.get("versionId")
+        to_download, unchanged = _changed_bundles(hot_update, prev_hashes)
+        to_download_names = [info["name"] for info in to_download]
+        _logger.info(
+            "images-fetch: %d bundles to download, %d unchanged (versionId=%s)",
+            len(to_download_names), unchanged, version_id,
+        )
+        stats = FetchStats(skipped_unchanged=unchanged)
+
+        # Download changed bundles with bounded concurrency, writing each
+        # to disk immediately (no RAM buffering).
+        if to_download_names:
+            sem = asyncio.Semaphore(8)
+
+            async def _one(path: str) -> None:
+                async with sem:
+                    url = _asset_url(session, path, server)
+                    try:
+                        async with session.session.get(url) as response:
+                            response.raise_for_status()
+                            zipped = await response.read()
+                        data = unzip_only_file(zipped)
+                        (cache_dir / _safe_filename(path)).write_bytes(data)
+                        stats.downloaded.append(path)
+                    except Exception as exc:  # noqa: BLE001
+                        stats.failed.append(
+                            {"bundle": path, "error": f"{type(exc).__name__}: {exc}"}
+                        )
+
+            await asyncio.gather(*(_one(n) for n in to_download_names))
+            stats.downloaded.sort()
+
+        # Build hash map: only bundles actually present in cache.
+        # Failed downloads are excluded so they retry on the next run.
+        hot_update_hashes = {
+            info["name"]: info["hash"]
+            for info in hot_update.get("abInfos", [])
+            if any(info["name"].startswith(p) for p in ART_PREFIXES)
+        }
+        succeeded_set = set(stats.downloaded)
+        all_hashes: dict[str, str] = {}
+        for name, h in hot_update_hashes.items():
+            if name in succeeded_set:
+                all_hashes[name] = h
+            elif name not in to_download_names and (cache_dir / _safe_filename(name)).exists():
+                all_hashes[name] = h
+
+        return stats, {"versionId": version_id, "hashes": all_hashes}
+    finally:
+        await session.session.close()
+
+
 def fetch_image_bundles(
     cache_dir: Path,
     *,
@@ -131,40 +150,9 @@ def fetch_image_bundles(
     """Download changed art bundles, save AB bytes to *cache_dir*.
 
     Returns (stats, hot_update_info) where hot_update_info carries the versionId
-    and the full abInfos hash map for persistence by the caller.
+    and the abInfos hash map.  Only bundles that were actually downloaded or
+    already cached are included in the hash map — failed downloads are excluded
+    so they are retried on the next run.
     """
     cache_dir.mkdir(parents=True, exist_ok=True)
-    prev_hashes = prev_hashes or {}
-
-    hot_update = _load_hot_update_list(server=server)
-    version_id = hot_update.get("versionId")
-    all_hashes = {
-        info["name"]: info["hash"]
-        for info in hot_update.get("abInfos", [])
-        if any(info["name"].startswith(p) for p in ART_PREFIXES)
-    }
-
-    to_download, unchanged = _changed_bundles(hot_update, prev_hashes)
-    names = [info["name"] for info in to_download]
-    _logger.info(
-        "images-fetch: %d bundles to download, %d unchanged (versionId=%s)",
-        len(names), unchanged, version_id,
-    )
-
-    stats = FetchStats(skipped_unchanged=unchanged)
-
-    if not names:
-        return stats, {"versionId": version_id, "hashes": all_hashes}
-
-    downloaded, errors = asyncio.run(_download_many(names, server))
-
-    for name, data in downloaded.items():
-        safe = name.replace("/", "_").replace("#", "__")
-        (cache_dir / f"{safe}.ab").write_bytes(data)
-        stats.downloaded.append(name)
-
-    for name, err in errors.items():
-        stats.failed.append({"bundle": name, "error": err})
-
-    stats.downloaded.sort()
-    return stats, {"versionId": version_id, "hashes": all_hashes}
+    return asyncio.run(_run_fetch(cache_dir, server, prev_hashes or {}))

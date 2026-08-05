@@ -26,12 +26,6 @@ CompressionHelper.DECOMPRESSION_MAP[CompressionFlags.LZHAM] = decompress_lz4ak
 
 _logger = logging.getLogger(__name__)
 
-#: Matches a skinId-derivable texture name produced by UnityPy.
-#:   char_002_amiya_2            → sprite for skinId char_002_amiya#2
-#:   char_002_amiya_epoque#4     → sprite for skinId char_002_amiya@epoque#4
-#:   char_1001_amiya2_2          → sprite for skinId char_1001_amiya2#2
-_TEX_NAME_RE = re.compile(r"^(char_\d+_[a-z0-9]+)(?:_([a-z0-9]+))?#?(\d+)?(?:\+.*)?$")
-
 
 def _load_skin_ids(excel_path: Path) -> set[str]:
     """Return the set of valid skinIds from skin_table.json, filtered to
@@ -150,15 +144,13 @@ def _extract_bundle(
                 continue
 
             # Prefer Sprite (cropped) over Texture2D (atlas with padding).
-            # If we already extracted a Sprite for this skin_id, skip the
-            # Texture2D duplicate.
+            # If we already saved a file for this skin_id, skip Texture2D
+            # duplicates — but let a later Sprite overwrite it (Sprite is the
+            # tightly cropped art, Texture2D has transparent padding).
             if obj.type.name == "Texture2D" and skin_id in extracted:
                 continue
 
             img: Image.Image = data.image
-            if obj.type.name == "Sprite" and skin_id in extracted:
-                # Sprite replaces the earlier Texture2D extraction (better crop)
-                pass
 
             # @, #, + are valid in Linux/Windows filenames and ZIP entries.
             out_path = out_dir / f"{skin_id}.original.png"

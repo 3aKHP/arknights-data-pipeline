@@ -234,11 +234,10 @@ def cmd_images_fetch(args: argparse.Namespace) -> int:
 def cmd_images_extract(args: argparse.Namespace) -> int:
     from . import images_extract
 
-    excel = args.workdir / "candidate" / "zh_CN" / "gamedata" / "excel"
+    excel = args.excel_dir
     if not excel.is_dir():
-        excel = args.workdir / "extract" / args.server / "gamedata" / "excel"
-    if not excel.is_dir():
-        print(f"[images-extract] no excel dir found (tried candidate and extract)", file=sys.stderr)
+        print(f"[images-extract] excel dir not found: {excel}", file=sys.stderr)
+        print("  Pass --excel-dir <path> pointing at gamedata/excel/", file=sys.stderr)
         return 1
 
     stats = images_extract.extract_images(
@@ -326,6 +325,8 @@ def main() -> int:
     p.set_defaults(func=cmd_images_fetch)
 
     p = sub.add_parser("images-extract", help="extract Sprite PNGs from cached AB bundles")
+    p.add_argument("--excel-dir", type=Path, required=True,
+                   help="path to gamedata/excel/ (containing skin_table.json + character_table.json)")
     p.set_defaults(func=cmd_images_extract)
 
     p = sub.add_parser("run", help="check -> baseline -> fetch -> merge -> story -> summarize -> validate -> package")
