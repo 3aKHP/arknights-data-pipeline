@@ -195,6 +195,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         if rc != 0:
             print(f"[run] step {cmd.__name__} failed, stopping (fail-closed)", file=sys.stderr)
             return rc
+    if getattr(args, "publish", False):
+        print("[run] auto-publishing")
+        return cmd_publish(args)
     return 0
 
 
@@ -241,6 +244,7 @@ def main() -> int:
     p = sub.add_parser("run", help="check -> baseline -> fetch -> merge -> story -> summarize -> validate -> package")
     p.add_argument("--clobber", action="store_true")
     p.add_argument("--force", action="store_true", help="run even if versionId is unchanged")
+    p.add_argument("--publish", action="store_true", help="auto-publish after successful run")
     p.add_argument("--attempts", type=int, default=5)
     p.add_argument("--astr-path", type=Path, default=Path("vendor/ASTR-Script"))
     p.add_argument("--probe-operator", action="append")
