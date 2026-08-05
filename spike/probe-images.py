@@ -18,7 +18,6 @@ import io
 import json
 import sys
 import time
-import zipfile
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path

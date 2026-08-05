@@ -10,8 +10,6 @@ import asyncio
 import io
 import json
 import time
-import zipfile
-from collections import Counter
 from pathlib import Path
 
 import UnityPy

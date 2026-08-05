@@ -15,12 +15,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from arkprts import network as netn
-from arkprts.assets.bundle import asset_path_to_server_filename, unzip_only_file
+from arkprts.assets.bundle import unzip_only_file
+
+from . import cdn
 
 _logger = logging.getLogger(__name__)
 
 #: AB-path prefixes whose bundles contain operator art (Texture2D/Sprite).
 ART_PREFIXES: tuple[str, ...] = ("chararts/", "skinpack/")
+
+
+def _is_art_bundle(name: str) -> bool:
+    """Return True if *name* is an art-asset bundle path."""
+    return any(name.startswith(p) for p in ART_PREFIXES)
 
 
 @dataclass
@@ -43,16 +50,6 @@ def _safe_filename(ab_path: str) -> str:
     return ab_path.replace("/", "_").replace("#", "__") + ".ab"
 
 
-def _asset_url(session: netn.NetworkSession, path: str, server: str) -> str:
-    """Build the CDN URL for a single asset path on a pre-loaded session."""
-    platform = session.default_platform or "Android"
-    return (
-        session.domains[server]["hu"]
-        + f"/{platform}/assets/{session.versions[(server, platform)]['resVersion']}/"
-        + asset_path_to_server_filename(path)
-    )
-
-
 def _changed_bundles(
     hot_update: dict, prev_hashes: dict[str, str]
 ) -> tuple[list[dict], int]:
@@ -61,7 +58,7 @@ def _changed_bundles(
     unchanged = 0
     for info in hot_update.get("abInfos", []):
         name = info.get("name", "")
-        if not any(name.startswith(p) for p in ART_PREFIXES):
+        if not _is_art_bundle(name):
             continue
         h = info.get("hash", "")
         if name in prev_hashes and prev_hashes[name] == h:
@@ -117,7 +114,7 @@ async def _run_fetch(
             await session.load_version_config(server, platform)
 
         # Fetch hot_update_list.
-        hul_url = _asset_url(session, "hot_update_list.json", server)
+        hul_url = cdn.asset_url(session, "hot_update_list.json", server)
         async with session.session.get(hul_url) as response:
             response.raise_for_status()
             hot_update = json.loads(await response.read())
@@ -138,7 +135,7 @@ async def _run_fetch(
 
             async def _one(path: str) -> None:
                 async with sem:
-                    url = _asset_url(session, path, server)
+                    url = cdn.asset_url(session, path, server)
                     try:
                         async with session.session.get(url) as response:
                             response.raise_for_status()
@@ -147,6 +144,8 @@ async def _run_fetch(
                         (cache_dir / _safe_filename(path)).write_bytes(data)
                         stats.downloaded.append(path)
                     except Exception as exc:  # noqa: BLE001
+                        # Remove stale cache so extraction doesn't use old data.
+                        (cache_dir / _safe_filename(path)).unlink(missing_ok=True)
                         stats.failed.append(
                             {"bundle": path, "error": f"{type(exc).__name__}: {exc}"}
                         )
@@ -159,7 +158,7 @@ async def _run_fetch(
         hot_update_hashes = {
             info["name"]: info["hash"]
             for info in hot_update.get("abInfos", [])
-            if any(info["name"].startswith(p) for p in ART_PREFIXES)
+            if _is_art_bundle(info["name"])
         }
         all_hashes = _build_hash_map(
             hot_update_hashes, set(to_download_names), set(stats.downloaded), cache_dir,

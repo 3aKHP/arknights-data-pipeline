@@ -170,6 +170,9 @@ def extract_images(
     *excel_path* points at the gamedata excel directory (for skin_table).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Clear stale PNGs from previous runs so removed skins don't linger.
+    for f in out_dir.glob("*.png"):
+        f.unlink()
     valid_skin_ids = _load_skin_ids(excel_path)
     _logger.info("images-extract: %d valid skin IDs", len(valid_skin_ids))
 

@@ -254,7 +254,8 @@ def cmd_images_extract(args: argparse.Namespace) -> int:
           f"{d['skipped_not_skin']} skipped, {d['failed']} failed "
           f"({d['bundles_processed']} bundles)")
     for f in stats.failed:
-        print(f"[images-extract] FAIL {f['name']}: {f['error']}", file=sys.stderr)
+        label = f.get('name') or f.get('bundle', '?')
+        print(f"[images-extract] FAIL {label}: {f['error']}", file=sys.stderr)
     return 1 if stats.failed else 0
 
 
