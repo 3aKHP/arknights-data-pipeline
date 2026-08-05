@@ -1,0 +1,43 @@
+name: Data Pipeline
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: data-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+      LLM_MODEL: ${{ secrets.LLM_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      - name: Setup flatc
+        run: |
+          curl -sL -o flatc \
+            https://raw.githubusercontent.com/MooncellWiki/torappu/37e645f4528248b639b63c35dbb63ee7ae64a315/bin/flatc
+          chmod +x flatc && sudo mv flatc /usr/local/bin/flatc
+
+      - name: Run pipeline
+        run: uv run akdp --workdir work run --publish
