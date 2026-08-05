@@ -290,6 +290,24 @@ def cmd_images_index(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_images_variants(args: argparse.Namespace) -> int:
+    from . import images_variants
+
+    images_dir = args.workdir / "images-out"
+    index_path = images_dir / "index.json"
+    if not index_path.exists():
+        print("[images-variants] index.json not found; run images-index first", file=sys.stderr)
+        return 1
+
+    stats = images_variants.generate_variants(images_dir, index_path)
+    d = stats.to_dict()
+    print(f"images-variants: {d['generated']} generated, {d['skipped']} skipped, "
+          f"{d['failed']} failed")
+    for f in stats.failed:
+        print(f"[images-variants] FAIL {f}", file=sys.stderr)
+    return 1 if stats.failed else 0
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     if not args.force:
         remote = check_mod.fetch_remote_version(args.server)
@@ -365,6 +383,9 @@ def main() -> int:
     p.add_argument("--excel-dir", type=Path, required=True,
                    help="path to gamedata/excel/")
     p.set_defaults(func=cmd_images_index)
+
+    p = sub.add_parser("images-variants", help="generate large/preview PNGs + update index")
+    p.set_defaults(func=cmd_images_variants)
 
     p = sub.add_parser("run", help="check -> baseline -> fetch -> merge -> story -> summarize -> validate -> package")
     p.add_argument("--clobber", action="store_true")

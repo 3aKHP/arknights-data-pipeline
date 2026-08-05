@@ -10,6 +10,7 @@ import pytest
 from akdp.images_fetch import _changed_bundles, _build_hash_map, _safe_filename
 from akdp.images_extract import _tex_name_to_skin_id, _load_skin_ids
 from akdp.images_index import generate_index, _classify_skin_id
+from akdp.images_variants import generate_variants, compute_delta
 
 
 def test_failed_download_not_marked_unchanged(tmp_path: Path) -> None:
@@ -186,3 +187,109 @@ def test_generate_index_skips_unknown(tmp_path: Path) -> None:
     assert stats.skipped == 1
     assert "char_999_fake#1" in stats.missing_from_tables
     assert "char_999_fake#1" not in index["artworks"]
+
+
+# ---------------------------------------------------------------------------
+# images_variants tests
+# ---------------------------------------------------------------------------
+
+def test_generate_variants_creates_large_and_preview(tmp_path: Path) -> None:
+    """Variants are generated with correct max-side dimensions."""
+    from PIL import Image
+
+    images_dir = tmp_path / "images-out"
+    images_dir.mkdir()
+    # Create an original larger than both thresholds.
+    orig = Image.new("RGBA", (2048, 1024), (255, 0, 0, 255))
+    orig_path = images_dir / "char_002_amiya#2.original.png"
+    orig.save(orig_path)
+
+    index = {
+        "currentVersion": "v1",
+        "artworks": {
+            "char_002_amiya#2": {
+                "kind": "base",
+                "shard": "chararts",
+                "original": {"file": "char_002_amiya#2.original.png", "w": 2048, "h": 1024, "bytes": 100, "sha256": "abc"},
+            }
+        }
+    }
+    index_path = images_dir / "index.json"
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+
+    stats = generate_variants(images_dir, index_path)
+    assert stats.generated == 1
+
+    updated = json.loads(index_path.read_text("utf-8"))
+    entry = updated["artworks"]["char_002_amiya#2"]
+    # Large: max side 1024, so 2048x1024 → 1024x512
+    assert entry["large"]["w"] == 1024
+    assert entry["large"]["h"] == 512
+    # Preview: max side 256, so 2048x1024 → 256x128
+    assert entry["preview"]["w"] == 256
+    assert entry["preview"]["h"] == 128
+    # Files exist
+    assert (images_dir / "char_002_amiya#2.large.png").exists()
+    assert (images_dir / "char_002_amiya#2.preview.png").exists()
+
+
+def test_generate_variants_no_upscale(tmp_path: Path) -> None:
+    """Small originals should not be upscaled."""
+    from PIL import Image
+
+    images_dir = tmp_path / "images-out"
+    images_dir.mkdir()
+    orig = Image.new("RGBA", (100, 50), (0, 255, 0, 255))
+    orig.save(images_dir / "small.original.png")
+
+    index = {
+        "currentVersion": "v1",
+        "artworks": {
+            "small": {
+                "kind": "base", "shard": "chararts",
+                "original": {"file": "small.original.png", "w": 100, "h": 50, "bytes": 10, "sha256": "x"},
+            }
+        }
+    }
+    index_path = images_dir / "index.json"
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+
+    generate_variants(images_dir, index_path)
+    updated = json.loads(index_path.read_text("utf-8"))
+    entry = updated["artworks"]["small"]
+    # Both variants should match original dimensions (no upscale).
+    assert entry["large"]["w"] == 100
+    assert entry["large"]["h"] == 50
+    assert entry["preview"]["w"] == 100
+    assert entry["preview"]["h"] == 50
+
+
+def test_compute_delta() -> None:
+    """Delta computation correctly identifies added/changed/removed."""
+    current = {
+        "artworks": {
+            "a": {"original": {"sha256": "aaa"}},
+            "b": {"original": {"sha256": "bbb_new"}},
+            "c": {"original": {"sha256": "ccc"}},
+        }
+    }
+    previous = {
+        "artworks": {
+            "a": {"original": {"sha256": "aaa"}},       # unchanged
+            "b": {"original": {"sha256": "bbb_old"}},   # changed
+            "d": {"original": {"sha256": "ddd"}},       # removed
+        }
+    }
+    delta = compute_delta(current, previous)
+    assert delta["added"] == {"c"}
+    assert delta["changed"] == {"b"}
+    assert delta["removed"] == {"d"}
+
+
+def test_compute_delta_no_previous() -> None:
+    """First run (no previous index) → everything is 'added'."""
+    current = {"artworks": {"a": {"original": {"sha256": "x"}}, "b": {"original": {"sha256": "y"}}}}
+    delta = compute_delta(current, None)
+    assert delta["added"] == {"a", "b"}
+    assert delta["changed"] == set()
+    assert delta["removed"] == set()
