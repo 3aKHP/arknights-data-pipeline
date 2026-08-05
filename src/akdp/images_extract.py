@@ -9,6 +9,7 @@ building sprites, alpha companions, tokens) is discarded immediately.
 from __future__ import annotations
 
 import io
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -30,8 +31,6 @@ _logger = logging.getLogger(__name__)
 def _load_skin_ids(excel_path: Path) -> set[str]:
     """Return the set of valid skinIds from skin_table.json, filtered to
     operators present in character_table.json."""
-    import json
-
     skin_table_path = excel_path / "skin_table.json"
     char_table_path = excel_path / "character_table.json"
     if not skin_table_path.is_file():
@@ -65,11 +64,8 @@ def _tex_name_to_skin_id(tex_name: str) -> str | None:
     if tex_name.startswith("build_") or "[alpha]" in tex_name:
         return None
 
-    # Split off any trailing variant like _2b (building portrait sub-sprite)
-    # The main art sprites are: _1, _1+, _2  and  _<skingroup>#<num>
     # Skin-group textures: char_002_amiya_epoque#4
     if "#" in tex_name:
-        # Has a skin group suffix: char_<id>_<group>#<num>
         # Reconstruct: char_002_amiya_epoque#4 → char_002_amiya@epoque#4
         parts = tex_name.split("_", 2)  # ['char', '002', 'amiya_epoque#4']
         if len(parts) < 3:
@@ -81,20 +77,14 @@ def _tex_name_to_skin_id(tex_name: str) -> str | None:
             return None
         op_part = rest[:idx]      # amiya
         skin_part = rest[idx + 1:]  # epoque#4
-        skin_id = f"char_{parts[1]}_{op_part}@{skin_part}"
-        return skin_id
+        return f"char_{parts[1]}_{op_part}@{skin_part}"
 
     # Base art: char_002_amiya_2 → char_002_amiya#2
     # char_002_amiya_1+  → char_002_amiya#1+  (rare: E1 art, only Amiya)
     m = re.match(r"^(char_\d+_[a-z0-9]+)_(\d+\+?)$", tex_name)
     if not m:
         return None
-    base = m.group(1)
-    suffix = m.group(2)
-    if suffix is None:
-        # Bare name like "char_002_amiya" — this is the avatar, skip
-        return None
-    return f"{base}#{suffix}"
+    return f"{m.group(1)}#{m.group(2)}"
 
 
 @dataclass
@@ -120,17 +110,24 @@ def _extract_bundle(
     """Extract Sprite PNGs from one AB bundle.
 
     Returns (extracted skin IDs, count of skipped non-skin objects, failures).
-    Only Sprite objects are extracted (Texture2D atlases are skipped to avoid
-    transparent padding; the Sprite is the cropped art).
+    Sprite is preferred over Texture2D (Sprite is the tightly cropped art;
+    Texture2D is the power-of-2 atlas with transparent padding).  Texture2D
+    is used as a fallback when no Sprite exists for a given skin_id; a later
+    Sprite overwrites the earlier Texture2D output.
     """
     extracted: list[str] = []
     skipped = 0
     failures: list[dict] = []
 
-    env = UnityPy.load(io.BytesIO(ab_data))
+    try:
+        env = UnityPy.load(io.BytesIO(ab_data))
+    except Exception as exc:  # noqa: BLE001
+        return extracted, skipped, [{"bundle": "<unknown>", "error": f"{type(exc).__name__}: {exc}"}]
+
     for obj in env.objects:
         if obj.type.name not in ("Texture2D", "Sprite"):
             continue
+        name = ""
         try:
             data = obj.read()
             name = getattr(data, "m_Name", None) or ""
@@ -143,10 +140,7 @@ def _extract_bundle(
                 skipped += 1
                 continue
 
-            # Prefer Sprite (cropped) over Texture2D (atlas with padding).
-            # If we already saved a file for this skin_id, skip Texture2D
-            # duplicates — but let a later Sprite overwrite it (Sprite is the
-            # tightly cropped art, Texture2D has transparent padding).
+            # Skip Texture2D if a Sprite for this skin_id was already saved.
             if obj.type.name == "Texture2D" and skin_id in extracted:
                 continue
 

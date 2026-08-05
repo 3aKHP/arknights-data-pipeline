@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from akdp.images_fetch import _changed_bundles
+from akdp.images_fetch import _changed_bundles, _build_hash_map, _safe_filename
 from akdp.images_extract import _tex_name_to_skin_id, _load_skin_ids
 
 
-def test_failed_download_not_marked_unchanged() -> None:
+def test_failed_download_not_marked_unchanged(tmp_path: Path) -> None:
     """A bundle that failed to download must not appear in the persisted hash
     map, otherwise it would be classified as 'unchanged' on the next run and
     never retried."""
@@ -22,20 +22,19 @@ def test_failed_download_not_marked_unchanged() -> None:
             {"name": "skinpack/char_002_amiya.ab", "hash": "ccc"},
         ]
     }
-    # Simulate: amiya chararts downloaded successfully, chen failed,
-    # amiya skinpack was unchanged (already cached).
-    succeeded = {"chararts/char_002_amiya.ab"}
-    to_download_names = {"chararts/char_002_amiya.ab", "chararts/char_010_chen.ab"}
-
     hot_update_hashes = {
         info["name"]: info["hash"] for info in hot_update["abInfos"]
     }
-    all_hashes: dict[str, str] = {}
-    for name, h in hot_update_hashes.items():
-        if name in succeeded:
-            all_hashes[name] = h
-        elif name not in to_download_names:
-            all_hashes[name] = h
+    # Simulate: amiya chararts downloaded successfully, chen failed,
+    # amiya skinpack was unchanged (already cached on disk).
+    succeeded = {"chararts/char_002_amiya.ab"}
+    to_download_names = {"chararts/char_002_amiya.ab", "chararts/char_010_chen.ab"}
+    # Create the cached file for the unchanged bundle.
+    (tmp_path / _safe_filename("skinpack/char_002_amiya.ab")).write_bytes(b"")
+
+    all_hashes = _build_hash_map(
+        hot_update_hashes, to_download_names, succeeded, tmp_path,
+    )
 
     # Successfully downloaded bundle is persisted.
     assert "chararts/char_002_amiya.ab" in all_hashes
@@ -46,7 +45,7 @@ def test_failed_download_not_marked_unchanged() -> None:
 
     # On the next run, the failed bundle should appear as "to download"
     # because its hash is not in prev_hashes.
-    to_dl, unchanged = _changed_bundles(hot_update, all_hashes)
+    to_dl, _ = _changed_bundles(hot_update, all_hashes)
     to_dl_names = [info["name"] for info in to_dl]
     assert "chararts/char_010_chen.ab" in to_dl_names
     assert "chararts/char_002_amiya.ab" not in to_dl_names

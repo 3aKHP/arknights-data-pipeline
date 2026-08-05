@@ -71,6 +71,39 @@ def _changed_bundles(
     return to_download, unchanged
 
 
+def _build_hash_map(
+    hot_update_hashes: dict[str, str],
+    to_download_names: set[str],
+    succeeded: set[str],
+    cache_dir: Path,
+) -> dict[str, str]:
+    """Build the persisted hash map, excluding failed downloads.
+
+    Only bundles that were successfully downloaded or already cached are
+    included.  Failed downloads are excluded so they retry on the next run.
+    """
+    all_hashes: dict[str, str] = {}
+    for name, h in hot_update_hashes.items():
+        if name in succeeded:
+            all_hashes[name] = h
+        elif name not in to_download_names and (cache_dir / _safe_filename(name)).exists():
+            all_hashes[name] = h
+    return all_hashes
+
+
+def _prune_stale_cache(cache_dir: Path, valid_filenames: set[str]) -> int:
+    """Delete cache files not in the current hot_update_list.
+
+    Returns the number of pruned files.
+    """
+    pruned = 0
+    for f in cache_dir.glob("*.ab"):
+        if f.name not in valid_filenames:
+            f.unlink()
+            pruned += 1
+    return pruned
+
+
 async def _run_fetch(
     cache_dir: Path,
     server: str,
@@ -128,13 +161,15 @@ async def _run_fetch(
             for info in hot_update.get("abInfos", [])
             if any(info["name"].startswith(p) for p in ART_PREFIXES)
         }
-        succeeded_set = set(stats.downloaded)
-        all_hashes: dict[str, str] = {}
-        for name, h in hot_update_hashes.items():
-            if name in succeeded_set:
-                all_hashes[name] = h
-            elif name not in to_download_names and (cache_dir / _safe_filename(name)).exists():
-                all_hashes[name] = h
+        all_hashes = _build_hash_map(
+            hot_update_hashes, set(to_download_names), set(stats.downloaded), cache_dir,
+        )
+
+        # Prune cache files for bundles no longer in hot_update_list.
+        valid_cache_files = {_safe_filename(n) for n in hot_update_hashes}
+        pruned = _prune_stale_cache(cache_dir, valid_cache_files)
+        if pruned:
+            _logger.info("images-fetch: pruned %d stale cache files", pruned)
 
         return stats, {"versionId": version_id, "hashes": all_hashes}
     finally:
