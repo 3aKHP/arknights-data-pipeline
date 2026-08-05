@@ -1,9 +1,8 @@
 # Arknights Data Pipeline
 
-明日方舟 CN 服游戏数据的解包与打包流水线 ——
-[3aKHP/ArknightsGameData](https://github.com/3aKHP/ArknightsGameData) 与
-[3aKHP/ArknightsStoryJson](https://github.com/3aKHP/ArknightsStoryJson)
-Release 的数据工厂，服务于 [PRTS-MCP](https://github.com/3aKHP/prts-mcp)（见 issue #86）。
+明日方舟 CN 服游戏数据的解包与打包流水线。本仓库**自身即分发点**——
+产出的 `data-*` Release 直接被 [PRTS-MCP](https://github.com/3aKHP/prts-mcp) 消费
+（见 issue [#86](https://github.com/3aKHP/prts-mcp/issues/86)）。
 
 ## 设计原则
 
@@ -14,8 +13,8 @@ Release 的数据工厂，服务于 [PRTS-MCP](https://github.com/3aKHP/prts-mcp
 2. **可验证**：每次发布附带 manifest（源版本、工具版本、包哈希、记录指标、
    排除项、合并统计）；校验门不过则不发布（fail-closed）。
 3. **可回滚**：Release 序列即历史档案，回滚 = 将旧 Release 重新标记为 latest。
-4. **分发契约不变**：产物为 `zh_CN-excel.zip` / `zh_CN-levels.zip` / `zh_CN.zip`，
-   PRTS-MCP 客户端零改动。
+4. **统一分发**：一个 `data-<versionId>` Release 带三个 asset，替代旧的两个 fork
+   仓库 + 两种 tag 前缀的历史模式。
 
 ## 流水线
 
@@ -33,8 +32,7 @@ publish    data-* 单 Release 三 asset，发到工厂仓库自身（gh CLI）
 
 ## 分发
 
-工厂仓库（`3aKHP/arknights-data-pipeline`）自身就是分发点。每个游戏版本一个
-Release（`data-<versionId>`），带三个 asset：
+每个游戏版本一个 Release（`data-<versionId>`），带三个 asset：
 - `zh_CN-excel.zip` — 数值表
 - `zh_CN-levels.zip` — 关卡数据
 - `zh_CN.zip` — excel + 剧情 JSON + ASTR 索引 + LLM 摘要
@@ -54,28 +52,41 @@ LLM_MODEL=deepseek-v4-flash                # 或任意兼容模型
 增量策略：候选树中的 `summaries.json` / `event_summaries.json` 由累积合并从基线
 继承，`summarize` 只对缺失条目调 LLM。典型更新 ~15-20 章 + 1-2 活动 ≈ 20 次调用。
 
-## 使用
+## 自动化（GitHub Actions）
+
+`.github/workflows/data-pipeline.yml` 每 2 小时运行一次：`check` 短路时 ~45 秒退出，
+有新版本时自动跑完整链路并 `publish`。需要以下 Repository Secrets：
+
+- `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL`
+
+也可通过 Actions 页面手动触发（workflow_dispatch）。
+
+## 本地使用
 
 ```bash
 uv sync --all-extras
 git submodule update --init   # ASTR-Script（story 步骤依赖）
-# 全链路（fetch 需要网络和约 500MB 下载；versionId 未变时自动短路）
+# 全链路（fetch 需要网络和约 150MB 下载；versionId 未变时自动短路）
 uv run akdp --workdir work run
 # 或分步
 uv run akdp --workdir work check
 uv run akdp --workdir work fetch
 uv run akdp --workdir work merge
 uv run akdp --workdir work story
+uv run akdp --workdir work summarize
 uv run akdp --workdir work validate
 uv run akdp --workdir work package
+uv run akdp --workdir work publish          # dry-run（默认）
+uv run akdp --workdir work publish --execute # 实际发布
 ```
 
 workdir 结构：
 
 ```
 work/
-  baseline/     # 基线（从上一版 Release 解压）
-  extract/      # 本次解包原始产物（arkprts 输出）
+  baseline/     # 基线（从最新 Release 解压；首次 fallback 到旧 fork 仓库）
+  extract/      # arkprts 原始解包产物
+  normalized/   # cn/ → zh_CN/ 布局映射后的中间产物
   candidate/    # 合并后的候选发布树
   dist/         # zip 产物 + manifest.json
 ```
