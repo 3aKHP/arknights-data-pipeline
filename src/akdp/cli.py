@@ -259,6 +259,37 @@ def cmd_images_extract(args: argparse.Namespace) -> int:
     return 1 if stats.failed else 0
 
 
+def cmd_images_index(args: argparse.Namespace) -> int:
+    from . import images_index
+
+    excel = args.excel_dir
+    if not excel.is_dir():
+        print(f"[images-index] excel dir not found: {excel}", file=sys.stderr)
+        print("  Pass --excel-dir <path> pointing at gamedata/excel/", file=sys.stderr)
+        return 1
+
+    # Read versionId from hashes.json if available.
+    version_id = ""
+    hashes_file = args.workdir / "images-cache" / "hashes.json"
+    if hashes_file.exists():
+        version_id = json.loads(hashes_file.read_text(encoding="utf-8")).get("versionId", "")
+
+    index, stats = images_index.generate_index(
+        args.workdir / "images-out",
+        args.excel_dir,
+        version_id=version_id,
+    )
+    (args.workdir / "images-out" / "index.json").write_text(
+        json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    d = stats.to_dict()
+    print(f"images-index: {d['indexed']} indexed, {d['skipped']} skipped "
+          f"(versionId={version_id})")
+    if d["missing_from_tables"]:
+        print(f"[images-index] WARN: {d['missing_from_tables']} PNGs not in skin_table")
+    return 0
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     if not args.force:
         remote = check_mod.fetch_remote_version(args.server)
@@ -329,6 +360,11 @@ def main() -> int:
     p.add_argument("--excel-dir", type=Path, required=True,
                    help="path to gamedata/excel/ (containing skin_table.json + character_table.json)")
     p.set_defaults(func=cmd_images_extract)
+
+    p = sub.add_parser("images-index", help="generate index.json from extracted PNGs")
+    p.add_argument("--excel-dir", type=Path, required=True,
+                   help="path to gamedata/excel/")
+    p.set_defaults(func=cmd_images_index)
 
     p = sub.add_parser("run", help="check -> baseline -> fetch -> merge -> story -> summarize -> validate -> package")
     p.add_argument("--clobber", action="store_true")

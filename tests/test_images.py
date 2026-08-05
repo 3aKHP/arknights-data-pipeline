@@ -9,6 +9,7 @@ import pytest
 
 from akdp.images_fetch import _changed_bundles, _build_hash_map, _safe_filename
 from akdp.images_extract import _tex_name_to_skin_id, _load_skin_ids
+from akdp.images_index import generate_index, _classify_skin_id
 
 
 def test_failed_download_not_marked_unchanged(tmp_path: Path) -> None:
@@ -110,3 +111,78 @@ def test_load_skin_ids_filters_tokens_and_unknown(tmp_path: Path) -> None:
     assert "token_10002_kalts_mon3tr_boc#6" not in valid
     # unknown charId excluded
     assert "char_999_unknown#1" not in valid
+
+
+# ---------------------------------------------------------------------------
+# images_index tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("skin_id, expected_kind, expected_shard", [
+    ("char_002_amiya#1", "base", "chararts"),
+    ("char_002_amiya#2", "base", "chararts"),
+    ("char_002_amiya#1+", "base", "chararts"),
+    ("char_1001_amiya2#2", "base", "chararts"),
+    ("char_002_amiya@epoque#4", "skin", "skinpack"),
+    ("char_010_chen@sale#10", "skin", "skinpack"),
+])
+def test_classify_skin_id(skin_id: str, expected_kind: str, expected_shard: str) -> None:
+    kind, shard = _classify_skin_id(skin_id)
+    assert kind == expected_kind
+    assert shard == expected_shard
+
+
+def test_generate_index_basic(tmp_path: Path) -> None:
+    """Generate an index from a small set of fake PNGs and verify structure."""
+    from PIL import Image
+
+    _write_excel(tmp_path)
+    images_dir = tmp_path / "images-out"
+    images_dir.mkdir()
+
+    # Create fake PNGs for known skin IDs.
+    for skin_id, size in [
+        ("char_002_amiya#2", (100, 200)),
+        ("char_002_amiya@epoque#4", (200, 200)),
+        ("char_010_chen#2", (50, 50)),
+    ]:
+        img = Image.new("RGBA", size, (255, 0, 0, 128))
+        img.save(images_dir / f"{skin_id}.original.png")
+
+    index, stats = generate_index(images_dir, tmp_path / "gamedata" / "excel", version_id="test-v1")
+
+    assert index["currentVersion"] == "test-v1"
+    assert stats.indexed == 3
+    assert "char_002_amiya#2" in index["artworks"]
+    assert "char_002_amiya@epoque#4" in index["artworks"]
+
+    amiya_e2 = index["artworks"]["char_002_amiya#2"]
+    assert amiya_e2["kind"] == "base"
+    assert amiya_e2["shard"] == "chararts"
+    assert amiya_e2["original"]["w"] == 100
+    assert amiya_e2["original"]["h"] == 200
+    assert amiya_e2["original"]["bytes"] > 0
+    assert len(amiya_e2["original"]["sha256"]) == 64
+
+    epoque = index["artworks"]["char_002_amiya@epoque#4"]
+    assert epoque["kind"] == "skin"
+    assert epoque["shard"] == "skinpack"
+
+
+def test_generate_index_skips_unknown(tmp_path: Path) -> None:
+    """PNGs whose skinId is not in skin_table should be skipped."""
+    from PIL import Image
+
+    _write_excel(tmp_path)
+    images_dir = tmp_path / "images-out"
+    images_dir.mkdir()
+
+    # Valid + invalid skin IDs.
+    img = Image.new("RGBA", (10, 10))
+    img.save(images_dir / "char_002_amiya#2.original.png")
+    img.save(images_dir / "char_999_fake#1.original.png")
+
+    index, stats = generate_index(images_dir, tmp_path / "gamedata" / "excel")
+    assert stats.indexed == 1
+    assert stats.skipped == 1
+    assert "char_999_fake#1" in stats.missing_from_tables
+    assert "char_999_fake#1" not in index["artworks"]
