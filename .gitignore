@@ -6,5 +6,6 @@ dist/
 .pytest_cache/
 data/
 spike/*.log
+spike/image-output/
 bin/
 .env
