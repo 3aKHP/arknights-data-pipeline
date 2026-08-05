@@ -47,7 +47,7 @@ def fetch_remote_version(server: str = "cn") -> dict:
     }
 
 
-_TAG_RE = re.compile(r"(?:upstream|gamedata)-(?P<vid>.+?)(?:-v\d+)?$")
+_TAG_RE = re.compile(r"(?:data|upstream|gamedata)-(?P<vid>.+?)(?:-v\d+)?$")
 
 
 def parse_version_id_from_tag(tag: str) -> str | None:
@@ -55,10 +55,14 @@ def parse_version_id_from_tag(tag: str) -> str | None:
     return m.group("vid") if m else None
 
 
-def latest_published_version(repo: str) -> str | None:
-    """Read the versionId embedded in the repo's latest release tag."""
+#: the factory repo is the distribution repo
+DIST_REPO = "3aKHP/arknights-data-pipeline"
+
+
+def latest_published_version() -> str | None:
+    """Read the versionId embedded in the factory repo's latest release tag."""
     proc = subprocess.run(
-        ["gh", "release", "view", "-R", repo, "--json", "tagName", "--jq", ".tagName"],
+        ["gh", "release", "view", "-R", DIST_REPO, "--json", "tagName", "--jq", ".tagName"],
         capture_output=True, text=True,
     )
     if proc.returncode != 0:

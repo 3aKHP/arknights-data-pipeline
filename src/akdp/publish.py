@@ -1,8 +1,9 @@
-"""Publish step: upload the three assets as new releases on the data repos.
+"""Publish step: upload the three assets as a single release on this repo.
 
-Tag conventions (kept compatible with PRTS-MCP sync expectations):
-  - 3aKHP/ArknightsGameData:  upstream-<source-sha-or-version>[-vN]
-  - 3aKHP/ArknightsStoryJson: gamedata-<source-sha-or-version>[-vN]
+The factory repo (3aKHP/arknights-data-pipeline) is its own distribution
+point — one Release per game version, carrying all three zips as assets.
+
+Tag convention: data-<versionId> (e.g. data-26-08-03-23-34-20_a745fc)
 """
 
 from __future__ import annotations
@@ -13,13 +14,27 @@ from pathlib import Path
 
 from . import contract
 
+#: this repo is the distribution repo
+DIST_REPO = "3aKHP/arknights-data-pipeline"
+TAG_PREFIX = "data-"
 
-def _release(repo: str, tag: str, title: str, assets: list[Path], notes: str) -> None:
-    subprocess.run(
-        ["gh", "release", "create", tag, "-R", repo, "--title", title,
-         "--notes", notes, *[str(a) for a in assets]],
-        check=True,
-    )
+#: all three assets go into a single release
+RELEASE_ASSETS = [
+    contract.EXCEL_ASSET,
+    contract.LEVELS_ASSET,
+    contract.STORY_ASSET,
+]
+
+
+def _release(tag: str, title: str, assets: list[Path], notes: str, repo: str) -> None:
+    cmd = [
+        "gh", "release", "create", tag,
+        "-R", repo,
+        "--title", title,
+        "--notes", notes,
+        *[str(a) for a in assets],
+    ]
+    subprocess.run(cmd, check=True)
 
 
 def publish(dist: Path, *, source_id: str, title_suffix: str, dry_run: bool = True) -> None:
@@ -27,14 +42,16 @@ def publish(dist: Path, *, source_id: str, title_suffix: str, dry_run: bool = Tr
     manifest = json.loads((dist / "manifest.json").read_text(encoding="utf-8"))
     notes = "```json\n" + json.dumps(manifest, ensure_ascii=False, indent=2) + "\n```"
 
-    plan = [
-        (contract.PACKAGE_GAMEDATA_REPO, f"upstream-{source_id}",
-         [dist / contract.EXCEL_ASSET, dist / contract.LEVELS_ASSET]),
-        (contract.PACKAGE_STORY_REPO, f"gamedata-{source_id}",
-         [dist / contract.STORY_ASSET]),
-    ]
-    for repo, tag, assets in plan:
-        if dry_run:
-            print(f"[publish:dry-run] {repo} tag={tag} assets={[a.name for a in assets]}")
-        else:
-            _release(repo, tag, f"Game Data {title_suffix}", assets, notes)
+    tag = f"{TAG_PREFIX}{source_id}"
+    asset_paths = [dist / name for name in RELEASE_ASSETS]
+    missing = [p.name for p in asset_paths if not p.exists()]
+    if missing:
+        raise FileNotFoundError(f"missing dist assets: {missing}")
+
+    if dry_run:
+        print(f"[publish:dry-run] {DIST_REPO} tag={tag}")
+        print(f"  assets: {[p.name for p in asset_paths]}")
+        print(f"  title:  Game Data {title_suffix}")
+    else:
+        _release(tag, f"Game Data {title_suffix}", asset_paths, notes, DIST_REPO)
+        print(f"[publish] created {tag} on {DIST_REPO}")

@@ -4,8 +4,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
+
+
+def _load_dotenv() -> None:
+    """Load .env in CWD into os.environ (no external dependency)."""
+    p = Path(".env")
+    if not p.is_file():
+        return
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key, val = key.strip(), val.strip().strip("'\"")
+        os.environ.setdefault(key, val)
+
+
+_load_dotenv()
 
 from . import baseline as baseline_mod
 from . import check as check_mod
@@ -81,7 +99,7 @@ def cmd_merge(args: argparse.Namespace) -> int:
 
 def cmd_check(args: argparse.Namespace) -> int:
     remote = check_mod.fetch_remote_version(args.server)
-    published = check_mod.latest_published_version("3aKHP/ArknightsGameData")
+    published = check_mod.latest_published_version()
     changed = remote["versionId"] != published
     print(f"remote versionId:    {remote['versionId']} (manifest {remote['manifestVersion']})")
     print(f"published versionId: {published}")
@@ -167,7 +185,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     if not args.force:
         remote = check_mod.fetch_remote_version(args.server)
-        published = check_mod.latest_published_version("3aKHP/ArknightsGameData")
+        published = check_mod.latest_published_version()
         if remote["versionId"] == published:
             print(f"[run] versionId unchanged ({published}), nothing to do")
             return 0
