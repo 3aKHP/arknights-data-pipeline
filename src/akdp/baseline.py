@@ -7,7 +7,6 @@ controlled local baseline; this pipeline never fetches the legacy upstream repos
 
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 import subprocess
@@ -17,6 +16,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from . import contract
+from .package import _sha256
 from .publish import DIST_REPO
 
 
@@ -52,16 +52,20 @@ def _verify_asset_digest(path: Path, metadata: dict) -> None:
     expected_size = metadata.get("size")
     expected_digest = metadata.get("digest")
     actual_size = path.stat().st_size
-    actual_digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    if isinstance(expected_size, int) and expected_size != actual_size:
+    if not isinstance(expected_size, int):
+        raise RuntimeError(f"baseline asset metadata has no valid size for {path.name}")
+    if expected_size != actual_size:
         raise RuntimeError(
             f"baseline asset size mismatch for {path.name}: "
             f"expected {expected_size}, got {actual_size}"
         )
-    if isinstance(expected_digest, str) and expected_digest != f"sha256:{actual_digest}":
+    if not isinstance(expected_digest, str) or not expected_digest.startswith("sha256:"):
+        raise RuntimeError(f"baseline asset metadata has no valid digest for {path.name}")
+    actual_digest = f"sha256:{_sha256(path)}"
+    if expected_digest != actual_digest:
         raise RuntimeError(
             f"baseline asset digest mismatch for {path.name}: "
-            f"expected {expected_digest}, got sha256:{actual_digest}"
+            f"expected {expected_digest}, got {actual_digest}"
         )
 
 

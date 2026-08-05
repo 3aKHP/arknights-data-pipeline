@@ -115,3 +115,14 @@ def test_validate_rejects_numeric_operator_rarity(tmp_path):
     result = validate_candidate(candidate)
     assert not result.ok
     assert any("invalid operator rarity" in error for error in result.errors)
+
+
+def test_validate_keeps_structured_errors_for_corrupt_character_table(tmp_path):
+    candidate = tmp_path / "candidate"
+    _mk_tree(candidate, char_names=["阿米娅"])
+    (candidate / "zh_CN/gamedata/excel/character_table.json").write_bytes(b"not-json")
+
+    result = validate_candidate(candidate)
+
+    assert not result.ok
+    assert any("unparseable excel file" in error for error in result.errors)

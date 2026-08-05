@@ -8,13 +8,13 @@ Tag convention: data-<versionId> (e.g. data-26-08-03-23-34-20_a745fc)
 
 from __future__ import annotations
 
-import hashlib
 import json
 import subprocess
 import time
 from pathlib import Path
 
 from . import contract
+from .package import _sha256
 
 #: this repo is the distribution repo
 DIST_REPO = "3aKHP/arknights-data-pipeline"
@@ -46,14 +46,6 @@ def _run_with_retry(cmd: list[str], desc: str) -> None:
             print(f"  retrying in {wait}s...")
             time.sleep(wait)
     raise RuntimeError(f"{desc} failed after {MAX_RETRIES} attempts: {last_err}")
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _release_state(tag: str) -> dict | None:
@@ -122,19 +114,10 @@ def publish(dist: Path, *, source_id: str, title_suffix: str, dry_run: bool = Tr
         ], "release create draft")
         state = _release_state(tag) or {"isDraft": True, "assets": []}
     elif not state.get("isDraft", False) and _missing_or_invalid_assets(state, asset_paths):
-        try:
-            _run_with_retry(
-                ["gh", "release", "edit", tag, "-R", DIST_REPO, "--draft"],
-                "reopen incomplete release",
-            )
-        except RuntimeError as exc:
-            raise RuntimeError(
-                f"release {tag} is public but incomplete and cannot be reopened; "
-                "repair it manually or publish a new tag before retrying"
-            ) from exc
-        state = _release_state(tag) or {"isDraft": True, "assets": []}
-        if not state.get("isDraft", False):
-            raise RuntimeError(f"release {tag} did not become a draft before repair")
+        raise RuntimeError(
+            f"release {tag} is public but incomplete and cannot be repaired automatically; "
+            "repair it manually or publish a new tag before retrying"
+        )
 
     # Upload assets one by one (smallest first, largest last), resuming any
     # already verified uploads left by an interrupted run.

@@ -60,15 +60,12 @@ def _tool_provenance(tool_versions: dict | None) -> dict:
     flatc = shutil.which("flatc")
     if flatc:
         actual_sha = _sha256(Path(flatc))
-        if actual_sha != contract.TORAPPU_FLATC_SHA256:
-            raise RuntimeError(
-                "flatc binary does not match the pinned torappu artifact: "
-                f"expected {contract.TORAPPU_FLATC_SHA256}, got {actual_sha}"
-            )
         tools.setdefault("flatc", {})
         if isinstance(tools["flatc"], dict):
             tools["flatc"].setdefault("sha256", actual_sha)
             tools["flatc"].setdefault("sourceCommit", contract.TORAPPU_FLATC_COMMIT)
+            if actual_sha != contract.TORAPPU_FLATC_SHA256:
+                tools["flatc"]["mismatched"] = True
     else:
         tools.setdefault("flatc", {"availableAtPackageTime": False})
     return tools
