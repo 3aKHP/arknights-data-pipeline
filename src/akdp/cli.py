@@ -14,6 +14,7 @@ from . import merge as merge_mod
 from . import package as package_mod
 from . import publish as publish_mod
 from . import story as story_mod
+from . import summarize as summarize_mod
 from . import validate as validate_mod
 from .normalize import normalize_extraction
 
@@ -100,6 +101,14 @@ def cmd_story(args: argparse.Namespace) -> int:
     return 1 if stats.failed else 0
 
 
+def cmd_summarize(args: argparse.Namespace) -> int:
+    stats = summarize_mod.run_summarize(args.workdir / "candidate")
+    (args.workdir / "summarize.json").write_text(
+        json.dumps(stats.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return 1 if stats.failed_details else 0
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     result = validate_mod.validate_candidate(
         args.workdir / "candidate",
@@ -127,6 +136,7 @@ def cmd_package(args: argparse.Namespace) -> int:
     merge_info = json.loads((workdir / "merge.json").read_text(encoding="utf-8")) if (workdir / "merge.json").exists() else {}
     validation = json.loads((workdir / "validation.json").read_text(encoding="utf-8")) if (workdir / "validation.json").exists() else {}
     story_stats = json.loads((workdir / "story.json").read_text(encoding="utf-8")) if (workdir / "story.json").exists() else {}
+    summarize_stats = json.loads((workdir / "summarize.json").read_text(encoding="utf-8")) if (workdir / "summarize.json").exists() else {}
     manifest = package_mod.package_candidate(
         workdir / "candidate",
         workdir / "dist",
@@ -134,6 +144,7 @@ def cmd_package(args: argparse.Namespace) -> int:
         merge_stats=merge_info.get("stats"),
         validation=validation,
         story_stats=story_stats,
+        summarize_stats=summarize_stats,
         tool_versions=_tool_versions(),
     )
     for name, meta in manifest["assets"].items():
@@ -161,7 +172,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f"[run] versionId unchanged ({published}), nothing to do")
             return 0
         print(f"[run] version changed: {published} -> {remote['versionId']}")
-    for cmd in (cmd_baseline, cmd_fetch, cmd_merge, cmd_story, cmd_validate, cmd_package):
+    for cmd in (cmd_baseline, cmd_fetch, cmd_merge, cmd_story, cmd_summarize, cmd_validate, cmd_package):
         rc = cmd(args)
         if rc != 0:
             print(f"[run] step {cmd.__name__} failed, stopping (fail-closed)", file=sys.stderr)
@@ -190,6 +201,9 @@ def main() -> int:
     p.add_argument("--astr-path", type=Path, default=Path("vendor/ASTR-Script"))
     p.set_defaults(func=cmd_story)
 
+    p = sub.add_parser("summarize", help="generate incremental LLM story/event summaries")
+    p.set_defaults(func=cmd_summarize)
+
     for name, func, help_ in (
         ("merge", cmd_merge, "normalize + merge into candidate tree"),
         ("package", cmd_package, "build distribution zips + manifest"),
@@ -206,7 +220,7 @@ def main() -> int:
     p.add_argument("--execute", action="store_true", help="actually create GitHub releases")
     p.set_defaults(func=cmd_publish)
 
-    p = sub.add_parser("run", help="check -> baseline -> fetch -> merge -> story -> validate -> package")
+    p = sub.add_parser("run", help="check -> baseline -> fetch -> merge -> story -> summarize -> validate -> package")
     p.add_argument("--clobber", action="store_true")
     p.add_argument("--force", action="store_true", help="run even if versionId is unchanged")
     p.add_argument("--attempts", type=int, default=5)
