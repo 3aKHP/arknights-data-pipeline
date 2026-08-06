@@ -12,7 +12,6 @@ The final ``index.json`` is written to *dist_dir* with all injected fields.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import zipfile
@@ -28,6 +27,9 @@ SCHEMA_VERSION = "akdp-images/v1"
 _VARIANTS: tuple[str, ...] = ("original", "large", "preview")
 _SHARDS: tuple[str, ...] = ("chararts", "skinpack")
 
+#: Fixed ZIP timestamp for reproducible archives (same convention as package.py).
+_ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+
 
 @dataclass
 class PackageStats:
@@ -36,6 +38,7 @@ class PackageStats:
     delta_added: int = 0
     delta_changed: int = 0
     delta_removed: int = 0
+    delta_empty: bool = False
     shards: list[str] = field(default_factory=list)
     total_bytes: int = 0
 
@@ -47,27 +50,30 @@ class PackageStats:
                 "added": self.delta_added,
                 "changed": self.delta_changed,
                 "removed": self.delta_removed,
+                "empty": self.delta_empty,
             },
             "shards": self.shards,
             "totalBytes": self.total_bytes,
         }
 
 
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def _write_deterministic(zf: zipfile.ZipFile, src: Path, arcname: str) -> None:
+    """Write a file with stable ZIP metadata so identical inputs hash alike."""
+    info = zipfile.ZipInfo(arcname, date_time=_ZIP_EPOCH)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.create_system = 3
+    info.external_attr = 0o100644 << 16
+    zf.writestr(info, src.read_bytes(), compress_type=zipfile.ZIP_DEFLATED,
+                compresslevel=9)
 
 
 def _zip_files(files: list[Path], out: Path, arc_prefix: str = "") -> int:
-    """Write *files* into a deterministic zip. Returns total bytes written."""
+    """Write *files* into a reproducible zip. Returns total bytes."""
     total = 0
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for src in sorted(files):
             arcname = f"{arc_prefix}/{src.name}" if arc_prefix else src.name
-            zf.write(src, arcname)
+            _write_deterministic(zf, src, arcname)
             total += src.stat().st_size
     return total
 
@@ -75,7 +81,10 @@ def _zip_files(files: list[Path], out: Path, arc_prefix: str = "") -> int:
 def _build_shard_zips(
     images_dir: Path, dist_dir: Path, index: dict, version_id: str,
 ) -> tuple[dict, int]:
-    """Create 6 baseline shard zips. Returns (shards_map, total_bytes)."""
+    """Create 6 baseline shard zips. Returns (shards_map, total_bytes).
+
+    Raises FileNotFoundError if any PNG referenced by the index is missing.
+    """
     shards: dict[str, str] = {}
     total = 0
     artworks = index["artworks"]
@@ -88,18 +97,19 @@ def _build_shard_zips(
             }
             if not entries:
                 continue
-            files = [
-                images_dir / entry[variant]["file"]
-                for entry in entries.values()
-            ]
-            existing = [f for f in files if f.exists()]
-            if not existing:
-                continue
+            files: list[Path] = []
+            for entry in entries.values():
+                p = images_dir / entry[variant]["file"]
+                if not p.exists():
+                    raise FileNotFoundError(
+                        f"missing {variant} PNG referenced by index: {p}"
+                    )
+                files.append(p)
             name = f"images-baseline-{shard}-{variant}-{version_id}.zip"
             shard_key = f"{shard}-{variant}"
             shards[shard_key] = name
-            total += _zip_files(existing, dist_dir / name)
-            _logger.info("  shard %s: %d files → %s", shard_key, len(existing), name)
+            total += _zip_files(files, dist_dir / name)
+            _logger.info("  shard %s: %d files → %s", shard_key, len(files), name)
 
     return shards, total
 
@@ -189,6 +199,7 @@ def package_images(
         stats.delta_added = len(delta["added"])
         stats.delta_changed = len(delta["changed"])
         stats.delta_removed = len(delta["removed"])
+        stats.delta_empty = len(changed_ids) == 0
 
         total = _build_delta_zip(images_dir, dist_dir, raw_index, changed_ids, version_id)
         stats.total_bytes = total

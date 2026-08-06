@@ -56,6 +56,7 @@ def publish_images(
     version_id: str,
     mode: str,
     dry_run: bool = True,
+    delta_empty: bool = False,
 ) -> None:
     """Publish packaged images to GitHub Releases.
 
@@ -66,7 +67,7 @@ def publish_images(
     if mode == "baseline":
         _publish_baseline(dist_dir, version_id, manifest, dry_run)
     else:
-        _publish_delta(dist_dir, version_id, manifest, dry_run)
+        _publish_delta(dist_dir, version_id, manifest, dry_run, delta_empty=delta_empty)
 
 
 def _publish_baseline(
@@ -133,6 +134,7 @@ def _publish_baseline(
 
 def _publish_delta(
     dist_dir: Path, version_id: str, manifest: dict, dry_run: bool,
+    delta_empty: bool = False,
 ) -> None:
     tag = f"images-{version_id}"
     delta_zip = dist_dir / f"images-delta-{version_id}.zip"
@@ -142,6 +144,14 @@ def _publish_delta(
         print(f"[images-publish:dry-run] delta {DIST_REPO} tag={tag}")
         print(f"  delta: {delta_zip.name} ({delta_zip.stat().st_size / 1e6:.1f} MB)")
         print(f"  index: {index_path.name}")
+        return
+
+    # Guard: refuse to clobber an existing release with an empty delta.
+    if delta_empty and _release_exists(tag):
+        _logger.warning(
+            "images-publish: delta for %s is empty and release %s already exists — skipping",
+            version_id, tag,
+        )
         return
 
     notes_file = dist_dir / "delta-notes.md"
