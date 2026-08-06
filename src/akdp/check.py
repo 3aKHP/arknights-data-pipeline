@@ -96,3 +96,41 @@ def latest_published_version() -> str | None:
     if not required.issubset(names):
         return None
     return parse_version_id_from_tag(value.get("tagName", ""))
+
+
+def _is_image_delta_tag(tag: str) -> bool:
+    """Return True if *tag* is an image delta tag (not baseline)."""
+    return tag.startswith("images-") and not tag.startswith("images-baseline-")
+
+
+def latest_published_image_version() -> str | None:
+    """Read the latest published image delta release version.
+
+    Searches for ``images-<versionId>`` tags (excluding ``images-baseline-*``).
+    Only returns a version if the Release carries ``index.json`` (mirrors the
+    JSON pipeline's asset-completeness guard).  Returns the versionId, or None
+    if no complete image delta Release exists yet.
+    """
+    proc = subprocess.run(
+        ["gh", "release", "list", "-R", DIST_REPO,
+         "--json", "tagName,isDraft,assets", "--limit", "200"],
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    try:
+        releases = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    for rel in releases:
+        if rel.get("isDraft"):
+            continue
+        tag = rel.get("tagName", "")
+        if not _is_image_delta_tag(tag):
+            continue
+        # Verify the Release carries its assets (not an interrupted publish).
+        names = {a.get("name") for a in rel.get("assets", [])}
+        if "index.json" not in names:
+            continue
+        return tag.removeprefix("images-")
+    return None

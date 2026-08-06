@@ -508,3 +508,35 @@ def test_package_delta_only_includes_changes(tmp_path: Path) -> None:
 
     # No baseline shards should be created in delta mode
     assert not list(dist_dir.glob("images-baseline-*.zip"))
+
+
+def test_package_delta_empty_sets_flag(tmp_path: Path) -> None:
+    """Delta with 0 changes sets delta_empty=True so publish can guard."""
+    images_dir = tmp_path / "images-out"
+    images_dir.mkdir()
+    dist_dir = tmp_path / "images-dist"
+    prev_dir = tmp_path / "images-prev"
+    prev_dir.mkdir()
+
+    import hashlib
+    _mk_index(images_dir, {
+        "a#1": {"shard": "chararts", "original": "aa", "large": "la", "preview": "pa"},
+    })
+    # Previous index is identical → 0 changes.
+    prev_index = {
+        "schemaVersion": "akdp-images/v1",
+        "baselineVersion": "v0",
+        "currentVersion": "v0",
+        "shards": {},
+        "artworks": {
+            "a#1": {"sinceVersion": "v0", "shard": "chararts",
+                    "original": {"sha256": "aa"}, "large": {"sha256": "la"}, "preview": {"sha256": "pa"}},
+        },
+    }
+    write_index_atomic(prev_dir / "index.json", prev_index)
+
+    _, stats = package_images(images_dir, dist_dir, prev_dir / "index.json", "v1")
+    assert stats.mode == "delta"
+    assert stats.delta_empty is True
+    assert stats.delta_added == 0
+    assert stats.delta_changed == 0

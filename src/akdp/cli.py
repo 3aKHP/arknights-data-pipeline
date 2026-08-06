@@ -270,10 +270,7 @@ def cmd_images_index(args: argparse.Namespace) -> int:
         return 1
 
     # Read versionId from hashes.json if available.
-    version_id = ""
-    hashes_file = args.workdir / "images-cache" / "hashes.json"
-    if hashes_file.exists():
-        version_id = json.loads(hashes_file.read_text(encoding="utf-8")).get("versionId", "")
+    version_id = _images_version_id(args.workdir)
 
     index, stats = images_index.generate_index(
         args.workdir / "images-out",
@@ -306,13 +303,23 @@ def cmd_images_variants(args: argparse.Namespace) -> int:
     return 1 if stats.failed else 0
 
 
+def _images_version_id(workdir: Path) -> str:
+    """Read versionId from images-cache/hashes.json."""
+    hashes_file = workdir / "images-cache" / "hashes.json"
+    if hashes_file.exists():
+        return json.loads(hashes_file.read_text(encoding="utf-8")).get("versionId", "")
+    return ""
+
+
 def cmd_images_package(args: argparse.Namespace) -> int:
     from . import images_package
 
-    version_id = ""
-    hashes_file = args.workdir / "images-cache" / "hashes.json"
-    if hashes_file.exists():
-        version_id = json.loads(hashes_file.read_text(encoding="utf-8")).get("versionId", "")
+    index_path = args.workdir / "images-out" / "index.json"
+    if not index_path.exists():
+        print("[images-package] index.json not found; run images-index first", file=sys.stderr)
+        return 1
+
+    version_id = _images_version_id(args.workdir)
     if not version_id:
         print("[images-package] versionId unknown (hashes.json not found)", file=sys.stderr)
         return 1
@@ -342,20 +349,25 @@ def cmd_images_package(args: argparse.Namespace) -> int:
 def cmd_images_publish(args: argparse.Namespace) -> int:
     from . import images_publish
 
-    version_id = ""
-    hashes_file = args.workdir / "images-cache" / "hashes.json"
-    if hashes_file.exists():
-        version_id = json.loads(hashes_file.read_text(encoding="utf-8")).get("versionId", "")
-    if not version_id:
-        print("[images-publish] versionId unknown", file=sys.stderr)
+    dist_index = args.workdir / "images-dist" / "index.json"
+    if not dist_index.exists():
+        print("[images-publish] images-dist/index.json not found; run images-package first", file=sys.stderr)
         return 1
 
-    # Determine mode from package stats.
+    # Read authoritative version from the packaged index, not hashes.json.
+    manifest = json.loads(dist_index.read_text(encoding="utf-8"))
+    version_id = manifest.get("currentVersion", "")
+    if not version_id:
+        print("[images-publish] currentVersion missing from index.json", file=sys.stderr)
+        return 1
+
     pkg_file = args.workdir / "images-package.json"
     if not pkg_file.exists():
         print("[images-publish] run images-package first", file=sys.stderr)
         return 1
-    mode = json.loads(pkg_file.read_text(encoding="utf-8")).get("mode", "")
+    pkg = json.loads(pkg_file.read_text(encoding="utf-8"))
+    mode = pkg.get("mode", "")
+    delta_empty = pkg.get("delta", {}).get("empty", False)
     if mode not in ("baseline", "delta"):
         print(f"[images-publish] unknown mode: {mode}", file=sys.stderr)
         return 1
@@ -365,13 +377,13 @@ def cmd_images_publish(args: argparse.Namespace) -> int:
         version_id=version_id,
         mode=mode,
         dry_run=not args.execute,
+        delta_empty=delta_empty,
     )
 
     if args.execute:
         # Advance prev index on successful publish.
         prev_dir = args.workdir / "images-prev"
         prev_dir.mkdir(parents=True, exist_ok=True)
-        import shutil
         shutil.copy2(
             args.workdir / "images-dist" / "index.json",
             prev_dir / "index.json",
@@ -380,26 +392,66 @@ def cmd_images_publish(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_run(args: argparse.Namespace) -> int:
+def _run_pipeline(
+    args: argparse.Namespace,
+    steps: tuple,
+    published_fn,
+    publish_fn,
+    log_prefix: str,
+) -> int:
+    """Shared orchestration for JSON and image pipelines."""
     if not args.force:
         remote = check_mod.fetch_remote_version(args.server)
-        published = check_mod.latest_published_version()
+        published = published_fn()
         if not check_mod.version_changed(
             remote["versionId"], published, force=args.force,
         ):
-            print(f"[run] versionId unchanged ({published}), nothing to do")
+            print(f"[{log_prefix}] versionId unchanged ({published}), nothing to do")
             return 0
-        print(f"[run] version changed: {published} -> {remote['versionId']}")
-    for cmd in (cmd_baseline, cmd_fetch, cmd_merge, cmd_story, cmd_summarize, cmd_validate, cmd_package):
+        print(f"[{log_prefix}] version changed: {published} -> {remote['versionId']}")
+    for cmd in steps:
         rc = cmd(args)
         if rc != 0:
-            print(f"[run] step {cmd.__name__} failed, stopping (fail-closed)", file=sys.stderr)
+            print(f"[{log_prefix}] step {cmd.__name__} failed, stopping (fail-closed)", file=sys.stderr)
             return rc
     if getattr(args, "publish", False):
-        print("[run] auto-publishing")
+        print(f"[{log_prefix}] auto-publishing")
         args.execute = True
-        return cmd_publish(args)
+        return publish_fn(args)
     return 0
+
+
+def cmd_images_run(args: argparse.Namespace) -> int:
+    """Orchestrate the full image pipeline: fetch → extract → index → variants → package → publish."""
+    return _run_pipeline(
+        args,
+        (cmd_images_fetch, cmd_images_extract, cmd_images_index,
+         cmd_images_variants, cmd_images_package),
+        check_mod.latest_published_image_version,
+        cmd_images_publish,
+        "images-run",
+    )
+
+
+def cmd_images_latest_tag(args: argparse.Namespace) -> int:
+    """Print the latest published image delta tag (empty if none)."""
+    version = check_mod.latest_published_image_version()
+    if version:
+        print(f"images-{version}")
+    else:
+        print("")
+    return 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    return _run_pipeline(
+        args,
+        (cmd_baseline, cmd_fetch, cmd_merge, cmd_story, cmd_summarize,
+         cmd_validate, cmd_package),
+        check_mod.latest_published_version,
+        cmd_publish,
+        "run",
+    )
 
 
 def main() -> int:
@@ -465,6 +517,16 @@ def main() -> int:
     p = sub.add_parser("images-publish", help="publish image releases (dry-run by default)")
     p.add_argument("--execute", action="store_true", help="actually create GitHub releases")
     p.set_defaults(func=cmd_images_publish)
+
+    p = sub.add_parser("images-run", help="full image pipeline: fetch → extract → index → variants → package → publish")
+    p.add_argument("--force", action="store_true", help="run even if versionId is unchanged")
+    p.add_argument("--publish", action="store_true", help="auto-publish after successful run")
+    p.add_argument("--excel-dir", type=Path, required=True,
+                   help="path to gamedata/excel/")
+    p.set_defaults(func=cmd_images_run)
+
+    p = sub.add_parser("images-latest-tag", help="print latest published image delta tag")
+    p.set_defaults(func=cmd_images_latest_tag)
 
     p = sub.add_parser("run", help="check -> baseline -> fetch -> merge -> story -> summarize -> validate -> package")
     p.add_argument("--clobber", action="store_true")
