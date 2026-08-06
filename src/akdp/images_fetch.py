@@ -136,19 +136,23 @@ async def _run_fetch(
             async def _one(path: str) -> None:
                 async with sem:
                     url = cdn.asset_url(session, path, server)
-                    try:
-                        async with session.session.get(url) as response:
-                            response.raise_for_status()
-                            zipped = await response.read()
-                        data = unzip_only_file(zipped)
-                        (cache_dir / _safe_filename(path)).write_bytes(data)
-                        stats.downloaded.append(path)
-                    except Exception as exc:  # noqa: BLE001
-                        # Remove stale cache so extraction doesn't use old data.
-                        (cache_dir / _safe_filename(path)).unlink(missing_ok=True)
-                        stats.failed.append(
-                            {"bundle": path, "error": f"{type(exc).__name__}: {exc}"}
-                        )
+                    last_err = ""
+                    for attempt in range(1, 4):  # 3 attempts with backoff
+                        try:
+                            async with session.session.get(url) as response:
+                                response.raise_for_status()
+                                zipped = await response.read()
+                            data = unzip_only_file(zipped)
+                            (cache_dir / _safe_filename(path)).write_bytes(data)
+                            stats.downloaded.append(path)
+                            return
+                        except Exception as exc:  # noqa: BLE001
+                            last_err = f"{type(exc).__name__}: {exc}"
+                            if attempt < 3:
+                                await asyncio.sleep(10 * attempt)
+                    # All retries exhausted.
+                    (cache_dir / _safe_filename(path)).unlink(missing_ok=True)
+                    stats.failed.append({"bundle": path, "error": last_err})
 
             await asyncio.gather(*(_one(n) for n in to_download_names))
             stats.downloaded.sort()

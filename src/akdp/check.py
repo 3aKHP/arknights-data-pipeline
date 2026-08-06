@@ -111,9 +111,10 @@ def latest_published_image_version() -> str | None:
     JSON pipeline's asset-completeness guard).  Returns the versionId, or None
     if no complete image delta Release exists yet.
     """
+    # Step 1: find candidate tags (gh release list doesn't support 'assets').
     proc = subprocess.run(
         ["gh", "release", "list", "-R", DIST_REPO,
-         "--json", "tagName,isDraft,assets", "--limit", "200"],
+         "--json", "tagName,isDraft", "--limit", "200"],
         capture_output=True, text=True, check=False,
     )
     if proc.returncode != 0:
@@ -122,15 +123,24 @@ def latest_published_image_version() -> str | None:
         releases = json.loads(proc.stdout)
     except json.JSONDecodeError:
         return None
-    for rel in releases:
-        if rel.get("isDraft"):
+    candidates = [
+        rel["tagName"] for rel in releases
+        if not rel.get("isDraft") and _is_image_delta_tag(rel.get("tagName", ""))
+    ]
+    # Step 2: verify the first candidate has index.json asset.
+    for tag in candidates:
+        proc = subprocess.run(
+            ["gh", "release", "view", tag, "-R", DIST_REPO,
+             "--json", "assets"],
+            capture_output=True, text=True, check=False,
+        )
+        if proc.returncode != 0:
             continue
-        tag = rel.get("tagName", "")
-        if not _is_image_delta_tag(tag):
+        try:
+            data = json.loads(proc.stdout)
+        except json.JSONDecodeError:
             continue
-        # Verify the Release carries its assets (not an interrupted publish).
-        names = {a.get("name") for a in rel.get("assets", [])}
-        if "index.json" not in names:
-            continue
-        return tag.removeprefix("images-")
+        names = {a.get("name") for a in data.get("assets", [])}
+        if "index.json" in names:
+            return tag.removeprefix("images-")
     return None

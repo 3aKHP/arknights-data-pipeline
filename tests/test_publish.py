@@ -111,18 +111,32 @@ def test_latest_published_image_version_skips_incomplete_and_baseline(monkeypatc
     and releases missing index.json."""
     import subprocess
 
-    releases = json.dumps([
-        {"tagName": "data-v1", "isDraft": False, "assets": [{"name": "manifest.json"}]},
-        {"tagName": "images-baseline-v1", "isDraft": False, "assets": [{"name": "index.json"}]},
-        {"tagName": "images-v0", "isDraft": False, "assets": []},  # incomplete
-        {"tagName": "images-v1", "isDraft": False, "assets": [{"name": "index.json"}, {"name": "images-delta-v1.zip"}]},
+    # Step 1: gh release list returns tag list (no assets field supported).
+    release_list = json.dumps([
+        {"tagName": "data-v1", "isDraft": False},
+        {"tagName": "images-baseline-v1", "isDraft": False},
+        {"tagName": "images-v0", "isDraft": False},   # incomplete
+        {"tagName": "images-v1", "isDraft": False},   # complete
     ])
-    monkeypatch.setattr(
-        subprocess, "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(
-            args[0], 0, stdout=releases, stderr="",
-        ),
-    )
+    # Step 2: gh release view returns assets for each candidate.
+    view_responses = {
+        "images-v0": json.dumps({"assets": []}),  # missing index.json
+        "images-v1": json.dumps({"assets": [{"name": "index.json"}, {"name": "images-delta-v1.zip"}]}),
+    }
+    call_count = [0]
+
+    def mock_run(*args, **kwargs):
+        cmd = args[0]
+        call_count[0] += 1
+        if "release" in cmd and "list" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=release_list, stderr="")
+        if "release" in cmd and "view" in cmd:
+            tag = cmd[cmd.index("view") + 1]
+            resp = view_responses.get(tag, json.dumps({"assets": []}))
+            return subprocess.CompletedProcess(cmd, 0, stdout=resp, stderr="")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="not found")
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
     from akdp.check import latest_published_image_version
 
     result = latest_published_image_version()
@@ -132,13 +146,13 @@ def test_latest_published_image_version_skips_incomplete_and_baseline(monkeypatc
 def test_latest_published_image_version_none_when_no_images(monkeypatch):
     import subprocess
 
-    releases = json.dumps([
-        {"tagName": "data-v1", "isDraft": False, "assets": [{"name": "manifest.json"}]},
+    release_list = json.dumps([
+        {"tagName": "data-v1", "isDraft": False},
     ])
     monkeypatch.setattr(
         subprocess, "run",
         lambda *args, **kwargs: subprocess.CompletedProcess(
-            args[0], 0, stdout=releases, stderr="",
+            args[0], 0, stdout=release_list, stderr="",
         ),
     )
     from akdp.check import latest_published_image_version
