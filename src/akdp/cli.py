@@ -392,58 +392,66 @@ def cmd_images_publish(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_images_run(args: argparse.Namespace) -> int:
-    """Orchestrate the full image pipeline: fetch → extract → index → variants → package → publish."""
+def _run_pipeline(
+    args: argparse.Namespace,
+    steps: tuple,
+    published_fn,
+    publish_fn,
+    log_prefix: str,
+) -> int:
+    """Shared orchestration for JSON and image pipelines."""
     if not args.force:
         remote = check_mod.fetch_remote_version(args.server)
-        published = check_mod.latest_published_image_version()
+        published = published_fn()
         if not check_mod.version_changed(
             remote["versionId"], published, force=args.force,
         ):
-            print(f"[images-run] versionId unchanged ({published}), nothing to do")
+            print(f"[{log_prefix}] versionId unchanged ({published}), nothing to do")
             return 0
-        print(f"[images-run] version changed: {published} -> {remote['versionId']}")
-
-    steps = (
-        cmd_images_fetch,
-        cmd_images_extract,
-        cmd_images_index,
-        cmd_images_variants,
-        cmd_images_package,
-    )
+        print(f"[{log_prefix}] version changed: {published} -> {remote['versionId']}")
     for cmd in steps:
         rc = cmd(args)
         if rc != 0:
-            print(f"[images-run] step {cmd.__name__} failed, stopping (fail-closed)", file=sys.stderr)
+            print(f"[{log_prefix}] step {cmd.__name__} failed, stopping (fail-closed)", file=sys.stderr)
             return rc
-
     if getattr(args, "publish", False):
-        print("[images-run] auto-publishing")
+        print(f"[{log_prefix}] auto-publishing")
         args.execute = True
-        return cmd_images_publish(args)
+        return publish_fn(args)
+    return 0
+
+
+def cmd_images_run(args: argparse.Namespace) -> int:
+    """Orchestrate the full image pipeline: fetch → extract → index → variants → package → publish."""
+    return _run_pipeline(
+        args,
+        (cmd_images_fetch, cmd_images_extract, cmd_images_index,
+         cmd_images_variants, cmd_images_package),
+        check_mod.latest_published_image_version,
+        cmd_images_publish,
+        "images-run",
+    )
+
+
+def cmd_images_latest_tag(args: argparse.Namespace) -> int:
+    """Print the latest published image delta tag (empty if none)."""
+    version = check_mod.latest_published_image_version()
+    if version:
+        print(f"images-{version}")
+    else:
+        print("")
     return 0
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    if not args.force:
-        remote = check_mod.fetch_remote_version(args.server)
-        published = check_mod.latest_published_version()
-        if not check_mod.version_changed(
-            remote["versionId"], published, force=args.force,
-        ):
-            print(f"[run] versionId unchanged ({published}), nothing to do")
-            return 0
-        print(f"[run] version changed: {published} -> {remote['versionId']}")
-    for cmd in (cmd_baseline, cmd_fetch, cmd_merge, cmd_story, cmd_summarize, cmd_validate, cmd_package):
-        rc = cmd(args)
-        if rc != 0:
-            print(f"[run] step {cmd.__name__} failed, stopping (fail-closed)", file=sys.stderr)
-            return rc
-    if getattr(args, "publish", False):
-        print("[run] auto-publishing")
-        args.execute = True
-        return cmd_publish(args)
-    return 0
+    return _run_pipeline(
+        args,
+        (cmd_baseline, cmd_fetch, cmd_merge, cmd_story, cmd_summarize,
+         cmd_validate, cmd_package),
+        check_mod.latest_published_version,
+        cmd_publish,
+        "run",
+    )
 
 
 def main() -> int:
@@ -516,6 +524,9 @@ def main() -> int:
     p.add_argument("--excel-dir", type=Path, required=True,
                    help="path to gamedata/excel/")
     p.set_defaults(func=cmd_images_run)
+
+    p = sub.add_parser("images-latest-tag", help="print latest published image delta tag")
+    p.set_defaults(func=cmd_images_latest_tag)
 
     p = sub.add_parser("run", help="check -> baseline -> fetch -> merge -> story -> summarize -> validate -> package")
     p.add_argument("--clobber", action="store_true")

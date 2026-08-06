@@ -104,3 +104,43 @@ def test_publish_repairs_public_incomplete_release_without_reopen(tmp_path, monk
 
     assert any("--clobber" in command for command in commands)
     assert not any("--draft" in command for command in commands)
+
+
+def test_latest_published_image_version_skips_incomplete_and_baseline(monkeypatch):
+    """latest_published_image_version should skip drafts, baseline tags,
+    and releases missing index.json."""
+    import subprocess
+
+    releases = json.dumps([
+        {"tagName": "data-v1", "isDraft": False, "assets": [{"name": "manifest.json"}]},
+        {"tagName": "images-baseline-v1", "isDraft": False, "assets": [{"name": "index.json"}]},
+        {"tagName": "images-v0", "isDraft": False, "assets": []},  # incomplete
+        {"tagName": "images-v1", "isDraft": False, "assets": [{"name": "index.json"}, {"name": "images-delta-v1.zip"}]},
+    ])
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, stdout=releases, stderr="",
+        ),
+    )
+    from akdp.check import latest_published_image_version
+
+    result = latest_published_image_version()
+    assert result == "v1"  # skips data-, baseline, incomplete images-v0
+
+
+def test_latest_published_image_version_none_when_no_images(monkeypatch):
+    import subprocess
+
+    releases = json.dumps([
+        {"tagName": "data-v1", "isDraft": False, "assets": [{"name": "manifest.json"}]},
+    ])
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, stdout=releases, stderr="",
+        ),
+    )
+    from akdp.check import latest_published_image_version
+
+    assert latest_published_image_version() is None

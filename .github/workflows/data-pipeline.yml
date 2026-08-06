@@ -71,8 +71,7 @@ jobs:
           fi
           # 2. Fetch previous image index for delta computation.
           mkdir -p work/images-prev
-          LATEST_TAG=$(gh release list -R "$GH_REPO" --json tagName --limit 200 \
-            -q '[.[].tagName] | map(select(startswith("images-") and (startswith("images-baseline-") | not))) | .[0] // ""')
+          LATEST_TAG=$(uv run akdp images-latest-tag)
           if [ -n "$LATEST_TAG" ]; then
             gh release download -R "$GH_REPO" "$LATEST_TAG" -p index.json \
               --output work/images-prev/index.json --clobber
