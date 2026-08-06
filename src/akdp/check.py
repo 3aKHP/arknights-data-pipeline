@@ -106,7 +106,7 @@ def latest_published_image_version() -> str | None:
     """
     proc = subprocess.run(
         ["gh", "release", "list", "-R", DIST_REPO,
-         "--json", "tagName,isDraft", "--limit", "100"],
+         "--json", "tagName,isDraft", "--limit", "200"],
         capture_output=True, text=True, check=False,
     )
     if proc.returncode != 0:

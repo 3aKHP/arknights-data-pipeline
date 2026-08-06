@@ -25,6 +25,7 @@ jobs:
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
       LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
       LLM_MODEL: ${{ secrets.LLM_MODEL }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,14 +60,31 @@ jobs:
           if [[ "$FORCE_RUN" == "true" ]]; then args+=(--force); fi
           uv run akdp "${args[@]}"
 
+      - name: Prepare image pipeline inputs
+        run: |
+          # 1. Ensure excel tables exist (JSON step may have short-circuited).
+          if [ ! -d work/candidate/zh_CN/gamedata/excel ]; then
+            echo "JSON pipeline short-circuited; downloading latest excel tables..."
+            gh release download -R "$GH_REPO" -p zh_CN-excel.zip --clobber --output /tmp/excel.zip
+            mkdir -p work/candidate
+            (cd work/candidate && unzip -q /tmp/excel.zip)
+          fi
+          # 2. Fetch previous image index for delta computation.
+          mkdir -p work/images-prev
+          LATEST_TAG=$(gh release list -R "$GH_REPO" --json tagName --limit 200 \
+            -q '[.[].tagName] | map(select(startswith("images-") and (startswith("images-baseline-") | not))) | .[0] // ""')
+          if [ -n "$LATEST_TAG" ]; then
+            gh release download -R "$GH_REPO" "$LATEST_TAG" -p index.json \
+              --output work/images-prev/index.json --clobber
+            echo "Downloaded previous image index from $LATEST_TAG"
+          else
+            echo "No previous image release found; will produce baseline"
+          fi
+
       - name: Run image pipeline
         env:
           FORCE_RUN: ${{ inputs.force || false }}
         run: |
-          if [ -d work/candidate/zh_CN/gamedata/excel ]; then
-            args=(--workdir work images-run --publish --excel-dir work/candidate/zh_CN/gamedata/excel)
-            if [[ "$FORCE_RUN" == "true" ]]; then args+=(--force); fi
-            uv run akdp "${args[@]}"
-          else
-            echo "JSON pipeline short-circuited (no new data); skipping images"
-          fi
+          args=(--workdir work images-run --publish --excel-dir work/candidate/zh_CN/gamedata/excel)
+          if [[ "$FORCE_RUN" == "true" ]]; then args+=(--force); fi
+          uv run akdp "${args[@]}"
