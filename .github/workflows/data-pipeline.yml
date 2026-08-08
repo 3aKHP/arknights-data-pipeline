@@ -77,7 +77,7 @@ jobs:
               --output work/images-prev/index.json --clobber
             echo "Downloaded previous image index from $LATEST_TAG"
             if gh release view -R "$GH_REPO" "$LATEST_TAG" --json assets \
-              --jq '.assets[].name' | rg -x 'images-build-state.json' >/dev/null; then
+              --jq '.assets[].name' | grep -Fxq 'images-build-state.json'; then
               gh release download -R "$GH_REPO" "$LATEST_TAG" -p images-build-state.json \
                 --output work/images-prev/images-build-state.json --clobber
               echo "Downloaded previous image build state from $LATEST_TAG"
