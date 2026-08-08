@@ -71,6 +71,11 @@ LLM_MODEL=deepseek-v4-flash                # 或任意兼容模型
 校验任一步失败都会保留上一代数据。完整责任边界与人工切换规则见
 [`SOURCE_STRATEGY.md`](SOURCE_STRATEGY.md)。
 
+图片工作流额外从上一版 `images-*` Release 恢复私有的
+`images-build-state.json`：它用 AB 包 hash 先筛出变化包，再以 Sprite SHA-256 决定
+真正的发布 delta。该资产不属于 PRTS-MCP 的公开 `index.json` 契约；旧 Release 尚无
+此资产、状态不兼容或版本不匹配时，工作流会安全回退到一次全量图片构建。
+
 ## 本地使用
 
 ```bash

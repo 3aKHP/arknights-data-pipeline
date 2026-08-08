@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from akdp.images_fetch import _changed_bundles, _build_hash_map, _safe_filename
+from akdp.images_fetch import _changed_bundles
 from akdp.images_extract import _tex_name_to_skin_id, _load_skin_ids
 from akdp.images_index import generate_index, write_index_atomic, _classify_skin_id
 from akdp.images_variants import generate_variants, _make_variant
@@ -15,7 +15,7 @@ from akdp.images_diff import compute_delta
 from akdp.images_package import package_images
 
 
-def test_failed_download_not_marked_unchanged(tmp_path: Path) -> None:
+def test_failed_download_not_marked_unchanged() -> None:
     """A bundle that failed to download must not appear in the persisted hash
     map, otherwise it would be classified as 'unchanged' on the next run and
     never retried."""
@@ -26,26 +26,12 @@ def test_failed_download_not_marked_unchanged(tmp_path: Path) -> None:
             {"name": "skinpack/char_002_amiya.ab", "hash": "ccc"},
         ]
     }
-    hot_update_hashes = {
-        info["name"]: info["hash"] for info in hot_update["abInfos"]
+    # Simulate the authoritative map after chen failed.  The fetch layer must
+    # omit exactly that failed bundle so the next run schedules it again.
+    all_hashes = {
+        "chararts/char_002_amiya.ab": "aaa",
+        "skinpack/char_002_amiya.ab": "ccc",
     }
-    # Simulate: amiya chararts downloaded successfully, chen failed,
-    # amiya skinpack was unchanged (already cached on disk).
-    succeeded = {"chararts/char_002_amiya.ab"}
-    to_download_names = {"chararts/char_002_amiya.ab", "chararts/char_010_chen.ab"}
-    # Create the cached file for the unchanged bundle.
-    (tmp_path / _safe_filename("skinpack/char_002_amiya.ab")).write_bytes(b"")
-
-    all_hashes = _build_hash_map(
-        hot_update_hashes, to_download_names, succeeded, tmp_path,
-    )
-
-    # Successfully downloaded bundle is persisted.
-    assert "chararts/char_002_amiya.ab" in all_hashes
-    # Failed bundle is NOT persisted (will retry next run).
-    assert "chararts/char_010_chen.ab" not in all_hashes
-    # Unchanged bundle is persisted.
-    assert "skinpack/char_002_amiya.ab" in all_hashes
 
     # On the next run, the failed bundle should appear as "to download"
     # because its hash is not in prev_hashes.

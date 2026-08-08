@@ -23,6 +23,8 @@ from UnityPy.enums.BundleFile import CompressionFlags
 # arkprts patches LZHAM decompression; replicate for standalone UnityPy.
 from arkprts.assets.bundle import decompress_lz4ak
 
+from .images_fetch import _safe_filename
+
 CompressionHelper.DECOMPRESSION_MAP[CompressionFlags.LZHAM] = decompress_lz4ak
 
 _logger = logging.getLogger(__name__)
@@ -90,6 +92,7 @@ def _tex_name_to_skin_id(tex_name: str) -> str | None:
 @dataclass
 class ExtractStats:
     extracted: list[str] = field(default_factory=list)
+    bundle_candidates: dict[str, list[str]] = field(default_factory=dict)
     skipped_not_skin: int = 0
     failed: list[dict] = field(default_factory=list)
     bundles_processed: int = 0
@@ -97,6 +100,7 @@ class ExtractStats:
     def to_dict(self) -> dict:
         return {
             "extracted": len(self.extracted),
+            "bundle_candidates": self.bundle_candidates,
             "skipped_not_skin": self.skipped_not_skin,
             "failed": len(self.failed),
             "bundles_processed": self.bundles_processed,
@@ -106,23 +110,24 @@ class ExtractStats:
 
 def _extract_bundle(
     ab_data: bytes, valid_skin_ids: set[str], out_dir: Path
-) -> tuple[list[str], int, list[dict]]:
+) -> tuple[list[str], set[str], int, list[dict]]:
     """Extract Sprite PNGs from one AB bundle.
 
-    Returns (extracted skin IDs, count of skipped non-skin objects, failures).
+    Returns (extracted skin IDs, candidate skin IDs, skipped count, failures).
     Sprite is preferred over Texture2D (Sprite is the tightly cropped art;
     Texture2D is the power-of-2 atlas with transparent padding).  Texture2D
     is used as a fallback when no Sprite exists for a given skin_id; a later
     Sprite overwrites the earlier Texture2D output.
     """
     extracted: list[str] = []
+    candidates: set[str] = set()
     skipped = 0
     failures: list[dict] = []
 
     try:
         env = UnityPy.load(io.BytesIO(ab_data))
     except Exception as exc:  # noqa: BLE001
-        return extracted, skipped, [{"bundle": "<unknown>", "error": f"{type(exc).__name__}: {exc}"}]
+        return extracted, candidates, skipped, [{"bundle": "<unknown>", "error": f"{type(exc).__name__}: {exc}"}]
 
     for obj in env.objects:
         if obj.type.name not in ("Texture2D", "Sprite"):
@@ -136,7 +141,11 @@ def _extract_bundle(
                 continue
 
             skin_id = _tex_name_to_skin_id(name)
-            if skin_id is None or skin_id not in valid_skin_ids:
+            if skin_id is None:
+                skipped += 1
+                continue
+            candidates.add(skin_id)
+            if skin_id not in valid_skin_ids:
                 skipped += 1
                 continue
 
@@ -155,13 +164,14 @@ def _extract_bundle(
             failures.append({"name": name, "error": f"{type(exc).__name__}: {exc}"})
             skipped += 1
 
-    return extracted, skipped, failures
+    return extracted, candidates, skipped, failures
 
 
 def extract_images(
     cache_dir: Path,
     out_dir: Path,
     excel_path: Path,
+    bundle_paths: set[str] | None = None,
 ) -> ExtractStats:
     """Extract all cached AB bundles into PNG files.
 
@@ -178,19 +188,26 @@ def extract_images(
 
     stats = ExtractStats()
 
-    ab_files = sorted(cache_dir.glob("*.ab"))
-    for ab_path in ab_files:
+    if bundle_paths is None:
+        bundle_files = [(path.name, path) for path in sorted(cache_dir.glob("*.ab"))]
+    else:
+        bundle_files = [
+            (bundle, cache_dir / _safe_filename(bundle))
+            for bundle in sorted(bundle_paths)
+        ]
+    for bundle, ab_path in bundle_files:
         stats.bundles_processed += 1
         try:
             ab_data = ab_path.read_bytes()
         except OSError as exc:
-            stats.failed.append({"bundle": ab_path.name, "error": str(exc)})
+            stats.failed.append({"bundle": bundle, "error": str(exc)})
             continue
 
-        extracted, skipped, failures = _extract_bundle(
+        extracted, candidates, skipped, failures = _extract_bundle(
             ab_data, valid_skin_ids, out_dir
         )
         stats.extracted.extend(extracted)
+        stats.bundle_candidates[bundle] = sorted(candidates)
         stats.skipped_not_skin += skipped
         stats.failed.extend(failures)
 

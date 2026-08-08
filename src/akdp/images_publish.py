@@ -15,6 +15,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from .images_state import BUILD_STATE_ASSET
+
 import json
 import logging
 import subprocess
@@ -79,6 +81,7 @@ def _publish_baseline(
     shard_paths = [dist_dir / n for n in shard_names if (dist_dir / n).exists()]
     sentinel = dist_dir / f"images-delta-{version_id}.zip"
     index_path = dist_dir / "index.json"
+    state_path = dist_dir / BUILD_STATE_ASSET
 
     if dry_run:
         print(f"[images-publish:dry-run] baseline {DIST_REPO} tag={tag}")
@@ -125,9 +128,12 @@ def _publish_baseline(
             "--notes", "Sentinel delta (0 new images). See baseline.",
             "--latest=false",
         ], f"create sentinel {delta_tag}")
+    sentinel_assets = [sentinel, index_path]
+    if state_path.exists():
+        sentinel_assets.append(state_path)
     _run_with_retry([
         "gh", "release", "upload", delta_tag,
-        "-R", DIST_REPO, "--clobber", str(sentinel), str(index_path),
+        "-R", DIST_REPO, "--clobber", *(str(asset) for asset in sentinel_assets),
     ], "upload sentinel + index.json")
     _logger.info("[images-publish] baseline %s + sentinel %s published", tag, delta_tag)
 
@@ -139,6 +145,7 @@ def _publish_delta(
     tag = f"images-{version_id}"
     delta_zip = dist_dir / f"images-delta-{version_id}.zip"
     index_path = dist_dir / "index.json"
+    state_path = dist_dir / BUILD_STATE_ASSET
 
     if dry_run:
         print(f"[images-publish:dry-run] delta {DIST_REPO} tag={tag}")
@@ -171,7 +178,10 @@ def _publish_delta(
             "--latest=false",
         ], f"create delta {tag}")
 
-    for asset in [delta_zip, index_path]:
+    assets = [delta_zip, index_path]
+    if state_path.exists():
+        assets.append(state_path)
+    for asset in assets:
         _logger.info("  uploading %s (%.1f MB)", asset.name, asset.stat().st_size / 1e6)
         _run_with_retry([
             "gh", "release", "upload", tag,

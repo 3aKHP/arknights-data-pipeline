@@ -33,12 +33,18 @@ def _is_art_bundle(name: str) -> bool:
 @dataclass
 class FetchStats:
     downloaded: list[str] = field(default_factory=list)
+    changed: list[str] = field(default_factory=list)
+    required: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)
     skipped_unchanged: int = 0
     failed: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "downloaded": len(self.downloaded),
+            "changed": len(self.changed),
+            "required": len(self.required),
+            "removed": len(self.removed),
             "skipped_unchanged": self.skipped_unchanged,
             "failed": len(self.failed),
             "failed_details": self.failed[:20],
@@ -68,26 +74,6 @@ def _changed_bundles(
     return to_download, unchanged
 
 
-def _build_hash_map(
-    hot_update_hashes: dict[str, str],
-    to_download_names: set[str],
-    succeeded: set[str],
-    cache_dir: Path,
-) -> dict[str, str]:
-    """Build the persisted hash map, excluding failed downloads.
-
-    Only bundles that were successfully downloaded or already cached are
-    included.  Failed downloads are excluded so they retry on the next run.
-    """
-    all_hashes: dict[str, str] = {}
-    for name, h in hot_update_hashes.items():
-        if name in succeeded:
-            all_hashes[name] = h
-        elif name not in to_download_names and (cache_dir / _safe_filename(name)).exists():
-            all_hashes[name] = h
-    return all_hashes
-
-
 def _prune_stale_cache(cache_dir: Path, valid_filenames: set[str]) -> int:
     """Delete cache files not in the current hot_update_list.
 
@@ -105,6 +91,8 @@ async def _run_fetch(
     cache_dir: Path,
     server: str,
     prev_hashes: dict[str, str],
+    required_bundles: set[str],
+    reuse_cached: bool,
 ) -> tuple[FetchStats, dict]:
     """Single async entry point: shared session for all network I/O."""
     session = netn.NetworkSession(default_server=server)
@@ -121,12 +109,32 @@ async def _run_fetch(
 
         version_id = hot_update.get("versionId")
         to_download, unchanged = _changed_bundles(hot_update, prev_hashes)
+        known = {
+            info["name"]: info
+            for info in hot_update.get("abInfos", [])
+            if _is_art_bundle(info.get("name", ""))
+        }
+        changed_names = {info["name"] for info in to_download}
+        forced_names = required_bundles - changed_names
+        if reuse_cached:
+            forced_names = {
+                name for name in forced_names
+                if not (cache_dir / _safe_filename(name)).exists()
+            }
+        for name in sorted(forced_names):
+            if name in known:
+                to_download.append(known[name])
         to_download_names = [info["name"] for info in to_download]
         _logger.info(
             "images-fetch: %d bundles to download, %d unchanged (versionId=%s)",
             len(to_download_names), unchanged, version_id,
         )
-        stats = FetchStats(skipped_unchanged=unchanged)
+        stats = FetchStats(
+            changed=sorted(changed_names),
+            required=sorted(forced_names & set(known)),
+            removed=sorted(set(prev_hashes) - set(known)),
+            skipped_unchanged=unchanged,
+        )
 
         # Download changed bundles with bounded concurrency, writing each
         # to disk immediately (no RAM buffering).
@@ -157,16 +165,23 @@ async def _run_fetch(
             await asyncio.gather(*(_one(n) for n in to_download_names))
             stats.downloaded.sort()
 
-        # Build hash map: only bundles actually present in cache.
-        # Failed downloads are excluded so they retry on the next run.
+        # A failed download must be absent from the persisted map so a local
+        # retry cannot mistake it for a cached unchanged bundle.
         hot_update_hashes = {
             info["name"]: info["hash"]
             for info in hot_update.get("abInfos", [])
             if _is_art_bundle(info["name"])
         }
-        all_hashes = _build_hash_map(
-            hot_update_hashes, set(to_download_names), set(stats.downloaded), cache_dir,
-        )
+        # A successful incremental run records the authoritative remote hash
+        # map, not merely locally cached files.  Hosted runners deliberately
+        # do not restore every AB package; the next run needs hashes to select
+        # changed bundles, not a claim that every unchanged package is local.
+        failed_names = {item["bundle"] for item in stats.failed}
+        all_hashes = {
+            name: bundle_hash
+            for name, bundle_hash in hot_update_hashes.items()
+            if name not in failed_names
+        }
 
         # Prune cache files for bundles no longer in hot_update_list.
         valid_cache_files = {_safe_filename(n) for n in hot_update_hashes}
@@ -184,13 +199,20 @@ def fetch_image_bundles(
     *,
     server: str = "cn",
     prev_hashes: dict[str, str] | None = None,
+    required_bundles: set[str] | None = None,
+    reuse_cached: bool = True,
 ) -> tuple[FetchStats, dict]:
     """Download changed art bundles, save AB bytes to *cache_dir*.
 
     Returns (stats, hot_update_info) where hot_update_info carries the versionId
-    and the abInfos hash map.  Only bundles that were actually downloaded or
-    already cached are included in the hash map — failed downloads are excluded
-    so they are retried on the next run.
+    and the authoritative art-bundle hash map. Failed downloads are excluded so
+    a retry cannot classify them as unchanged.
     """
     cache_dir.mkdir(parents=True, exist_ok=True)
-    return asyncio.run(_run_fetch(cache_dir, server, prev_hashes or {}))
+    return asyncio.run(_run_fetch(
+        cache_dir,
+        server,
+        prev_hashes or {},
+        required_bundles or set(),
+        reuse_cached,
+    ))

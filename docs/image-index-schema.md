@@ -86,10 +86,14 @@ images-out/            per-run staging (每次运行重建)
 
 images-prev/           previous index (跨运行保留)
   index.json           上一版发布的索引；diff 的基础
+  images-build-state.json
+                       上一版私有构建状态；包级 hash 与 Sprite 候选来源
 
 dist/                  per-run packaging output
   images-delta-*.zip   delta 包
   index.json           嵌入 delta 的全量索引副本
+  images-build-state.json
+                       随图片 Release 发布；仅供下一次工厂构建恢复
 ```
 
 ### 2.1 per-run staging (`images-out/`)
@@ -98,12 +102,25 @@ dist/                  per-run packaging output
 `images-index` 和 `images-variants` 在此目录上操作，产出 `index.json`。
 运行结束后，`images-out/index.json` 是**当前版本的完整快照**。
 
-### 2.2 persistent canonical store (`images-cache/`)
+### 2.2 local cache (`images-cache/`)
 
-`images-cache/hashes.json` 跨运行保留，是增量 fetch 的基础。
-AB 包文件也在缓存中保留，避免重复下载。
+本地连续运行时，`images-cache/` 可保留 AB 包和 `hashes.json`，减少重复下载。
+但 GitHub-hosted Runner 是临时环境，不能把它当作 CI 的持久性边界；工作流不会
+恢复约 2 GB 的完整 AB 缓存。
 
-### 2.3 previous index (`images-prev/`)
+CI 的持久增量边界是随上一版 `images-*` Release 发布的
+`images-build-state.json`。它不是 PRTS-MCP 消费契约，包含：
+
+- 当前艺术 AB 的 `bundle path -> hash`，用于先做包级变更检测；
+- `bundle path -> candidate skinId[]`，包括当时尚未在 `skin_table` 有效的候选；
+- 上一版有效 skinId 集合。
+
+新 Runner 只下载 hash 已变的包，以及新近变为有效的 skinId 所在的未变包；之后只
+提取/缩放受影响 Sprite，并把结果合并进上一版的公开全量索引。状态资产缺失、schema
+不兼容、或它与上一版 `index.json` 的 versionId 不一致时，必须回退到全量构建；不能
+发布猜测得到的部分索引。
+
+### 2.3 previous public index (`images-prev/`)
 
 `images-prev/index.json` 是**上一次发布的索引**——即上一次成功运行后从
 `images-out/index.json` 拷贝而来。它提供 `compute_delta()` 的 previous 参数。
@@ -112,6 +129,7 @@ AB 包文件也在缓存中保留，避免重复下载。
 - 后续运行：`compute_delta(current, prev)` → 只有新增/变化的 skinId 进 delta
 
 在 Phase D 发布成功后，`images-out/index.json` 拷贝到 `images-prev/index.json`。
+同一时刻才推进 `images-build-state.json`；发布或资产校验失败不得推进任一状态。
 
 ### 2.4 sinceVersion 语义
 

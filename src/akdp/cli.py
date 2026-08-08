@@ -41,6 +41,14 @@ from . import publish as publish_mod
 from . import story as story_mod
 from . import summarize as summarize_mod
 from . import validate as validate_mod
+from .images_state import (
+    BUILD_STATE_ASSET,
+    build_next_state,
+    load_build_state,
+    merge_incremental_index,
+    state_matches_previous_index,
+    write_build_state,
+)
 from .normalize import normalize_extraction, policy_manifest
 
 
@@ -210,21 +218,57 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
 def cmd_images_fetch(args: argparse.Namespace) -> int:
     from . import images_fetch
+    from .images_extract import _load_skin_ids
 
     cache_dir = args.workdir / "images-cache"
-    hashes_file = cache_dir / "hashes.json"
-    prev_hashes: dict[str, str] = {}
-    if hashes_file.exists():
-        prev_hashes = json.loads(hashes_file.read_text(encoding="utf-8")).get("hashes", {})
+    previous_index = None
+    previous_index_path = args.workdir / "images-prev" / "index.json"
+    if previous_index_path.exists():
+        try:
+            previous_index = json.loads(previous_index_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+    previous_state = load_build_state(args.workdir / "images-prev" / BUILD_STATE_ASSET)
+    excel_dir = getattr(args, "excel_dir", None)
+    valid_skin_ids: set[str] = set()
+    if excel_dir is not None and excel_dir.is_dir():
+        valid_skin_ids = _load_skin_ids(excel_dir)
+
+    incremental = bool(
+        previous_state
+        and valid_skin_ids
+        and state_matches_previous_index(previous_state, previous_index)
+    )
+    previous_hashes = previous_state.bundle_hashes if incremental and previous_state else {}
+    new_skin_ids = valid_skin_ids - previous_state.valid_skin_ids if incremental and previous_state else set()
+    required_bundles = previous_state.bundles_for(new_skin_ids) if incremental and previous_state else set()
 
     stats, info = images_fetch.fetch_image_bundles(
-        cache_dir, server=args.server, prev_hashes=prev_hashes,
+        cache_dir,
+        server=args.server,
+        prev_hashes=previous_hashes,
+        required_bundles=required_bundles,
+        reuse_cached=not incremental,
     )
-    hashes_file.write_text(
+    (cache_dir / "hashes.json").write_text(
         json.dumps(info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    plan = {
+        "incremental": incremental,
+        "versionId": info.get("versionId", ""),
+        "bundleHashes": info.get("hashes", {}),
+        "downloadedBundles": stats.downloaded,
+        "removedBundles": stats.removed,
+        "currentValidSkinIds": sorted(valid_skin_ids),
+        "newSkinIds": sorted(new_skin_ids),
+        "requiredBundles": sorted(required_bundles),
+    }
+    (args.workdir / "images-plan.json").write_text(
+        json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     d = stats.to_dict()
     print(f"images-fetch: downloaded {d['downloaded']}, "
+          f"changed {d['changed']}, required {d['required']}, "
           f"unchanged {d['skipped_unchanged']}, failed {d['failed']} "
           f"(versionId={info.get('versionId')})")
     for f in stats.failed:
@@ -241,10 +285,13 @@ def cmd_images_extract(args: argparse.Namespace) -> int:
         print("  Pass --excel-dir <path> pointing at gamedata/excel/", file=sys.stderr)
         return 1
 
+    plan_path = args.workdir / "images-plan.json"
+    bundle_paths = None
+    if plan_path.exists():
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        bundle_paths = set(plan.get("downloadedBundles", []))
     stats = images_extract.extract_images(
-        args.workdir / "images-cache",
-        args.workdir / "images-out",
-        excel,
+        args.workdir / "images-cache", args.workdir / "images-out", excel, bundle_paths,
     )
     (args.workdir / "images-extract.json").write_text(
         json.dumps(stats.to_dict(), ensure_ascii=False, indent=2) + "\n",
@@ -325,6 +372,65 @@ def cmd_images_package(args: argparse.Namespace) -> int:
         return 1
 
     prev_index = args.workdir / "images-prev" / "index.json"
+    plan_path = args.workdir / "images-plan.json"
+    if plan_path.exists():
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        if not plan.get("currentValidSkinIds"):
+            plan = None
+    else:
+        plan = None
+    if plan is not None:
+        partial_index = json.loads(index_path.read_text(encoding="utf-8"))
+        previous_index = None
+        if prev_index.exists():
+            previous_index = json.loads(prev_index.read_text(encoding="utf-8"))
+        previous_state = load_build_state(args.workdir / "images-prev" / BUILD_STATE_ASSET)
+        valid_skin_ids = set(plan.get("currentValidSkinIds", []))
+        processed_bundles = set(plan.get("downloadedBundles", []))
+        removed_bundles = set(plan.get("removedBundles", []))
+        extract_stats = json.loads((args.workdir / "images-extract.json").read_text(encoding="utf-8"))
+        processed_candidates = extract_stats.get("bundle_candidates", {})
+        if not all(isinstance(v, list) for v in processed_candidates.values()):
+            print("[images-package] invalid extracted bundle candidates", file=sys.stderr)
+            return 1
+        known_affected = set(partial_index.get("artworks", {}))
+        if previous_state and plan.get("incremental"):
+            known_affected |= previous_state.candidates_for(processed_bundles | removed_bundles)
+            known_affected |= previous_state.valid_skin_ids - valid_skin_ids
+            # Every newly-valid skin must have been extracted either from a
+            # changed bundle or from a state-directed unchanged bundle.  The
+            # public image contract currently has complete skin coverage, so
+            # accepting a missing new entry would silently publish a partial
+            # full index.
+            missing = set(plan.get("newSkinIds", [])) - set(partial_index.get("artworks", {}))
+            if missing:
+                print(
+                    "[images-package] incremental coverage missing for "
+                    f"{sorted(missing)[:5]}; refusing to publish partial index",
+                    file=sys.stderr,
+                )
+                return 1
+        merged_index = merge_incremental_index(
+            previous_index,
+            partial_index,
+            valid_skin_ids=valid_skin_ids,
+            affected_skin_ids=known_affected,
+        )
+        if not merged_index.get("currentVersion"):
+            print("[images-package] merged index lacks currentVersion", file=sys.stderr)
+            return 1
+        from .images_index import write_index_atomic
+
+        write_index_atomic(index_path, merged_index)
+        (args.workdir / "images-dist").mkdir(parents=True, exist_ok=True)
+        next_state = build_next_state(
+            previous_state if plan.get("incremental") else None,
+            version_id=merged_index["currentVersion"],
+            bundle_hashes=plan.get("bundleHashes", {}),
+            processed_candidates=processed_candidates,
+            valid_skin_ids=valid_skin_ids,
+        )
+        write_build_state(args.workdir / "images-dist" / BUILD_STATE_ASSET, next_state)
     final_index, stats = images_package.package_images(
         args.workdir / "images-out",
         args.workdir / "images-dist",
@@ -388,6 +494,9 @@ def cmd_images_publish(args: argparse.Namespace) -> int:
             args.workdir / "images-dist" / "index.json",
             prev_dir / "index.json",
         )
+        state_path = args.workdir / "images-dist" / BUILD_STATE_ASSET
+        if state_path.exists():
+            shutil.copy2(state_path, prev_dir / BUILD_STATE_ASSET)
         print("[images-publish] prev index advanced")
     return 0
 
@@ -496,6 +605,8 @@ def main() -> int:
     p.set_defaults(func=cmd_publish)
 
     p = sub.add_parser("images-fetch", help="download changed chararts/skinpack AB bundles")
+    p.add_argument("--excel-dir", type=Path,
+                   help="optional gamedata/excel path for durable incremental planning")
     p.set_defaults(func=cmd_images_fetch)
 
     p = sub.add_parser("images-extract", help="extract Sprite PNGs from cached AB bundles")
