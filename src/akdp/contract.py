@@ -15,6 +15,10 @@ REQUIRED_EXCEL_FILES = [
     "stage_table.json",
     "zone_table.json",
     "item_table.json",
+    # Producer-side requirement ahead of the PRTS 2.9 recruitment lookup;
+    # consumers only read the files they know, so requiring it here is
+    # forward-compatible.
+    "gacha_table.json",
 ]
 
 #: files PRTS-MCP requires under zh_CN/gamedata/levels/
@@ -33,7 +37,11 @@ LEVELS_ASSET = "zh_CN-levels.zip"
 STORY_ASSET = "zh_CN.zip"
 MANIFEST_ASSET = "manifest.json"
 
-# Versioned consumer contract. Bump when required files or schema gates change.
+# Versioned consumer contract. PRTS-MCP consumers validate the manifest with an
+# EXACT match on this string, so a bump rejects every deployed client: only bump
+# after consumers learn to tolerate unknown versions. Additive tightening (new
+# required files or schema gates on data the tree already carries) ships within
+# the current version.
 CONTRACT_VERSION = "prts-mcp-data/v1"
 
 # The workflow downloads this exact torappu artifact.  Keeping the source

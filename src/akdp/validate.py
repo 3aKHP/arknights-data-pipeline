@@ -89,6 +89,40 @@ def validate_candidate(
                     + ", ".join(bad_rarity[:10])
                 )
 
+    # Reject gacha_table shapes the PRTS recruitment lookup cannot consume.
+    # gacha_table is a bag of functional keys, not a record map, so the
+    # generic record-count gate does not apply; assert the keys directly.
+    gacha_path = zh / "gamedata/excel/gacha_table.json"
+    if gacha_path.is_file():
+        try:
+            gacha = json.loads(gacha_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            gacha = None
+        if isinstance(gacha, dict):
+            tags = gacha.get("gachaTags")
+            if not (
+                isinstance(tags, list) and tags
+                and all(isinstance(t, dict) and "tagId" in t and "tagName" in t for t in tags)
+            ):
+                res.errors.append(
+                    "invalid gacha_table.json: gachaTags must be a non-empty list "
+                    "of {tagId, tagName, ...} objects"
+                )
+            pool = gacha.get("recruitPool")
+            if not (
+                isinstance(pool, dict)
+                and isinstance(pool.get("recruitTimeTable"), list)
+                and isinstance(pool.get("recruitConstants"), dict)
+            ):
+                res.errors.append(
+                    "invalid gacha_table.json: recruitPool must contain "
+                    "recruitTimeTable (list) and recruitConstants (object)"
+                )
+            if not isinstance(gacha.get("recruitDetail"), str) or not gacha["recruitDetail"].strip():
+                res.errors.append(
+                    "invalid gacha_table.json: recruitDetail must be a non-empty string"
+                )
+
     # --- gate 2: every .json is decodable UTF-8 JSON
     bad = 0
     for p in zh.rglob("*.json"):

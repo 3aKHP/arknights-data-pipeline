@@ -27,9 +27,21 @@ def _mk_tree(root: Path, *, char_names, old_level: bool = True) -> None:
         _write(zh, f"gamedata/excel/{name}.json", {})
     _write(zh, "gamedata/excel/stage_table.json", {"stages": {"a": {}}})
     _write(zh, "gamedata/excel/item_table.json", {"items": {"i1": {}}})
+    _write(zh, "gamedata/excel/gacha_table.json", _MIN_GACHA_TABLE)
     _write(zh, "gamedata/levels/enemydata/enemy_database.json", {"enemies": []})
     if old_level:
         _write(zh, "gamedata/levels/activities/act1/level_act1_01.json", {})
+
+
+#: minimal gacha_table shape satisfying the recruitment contract gate
+_MIN_GACHA_TABLE = {
+    "gachaTags": [{"tagId": 1, "tagName": "近卫干员", "tagGroup": 1}],
+    "recruitPool": {
+        "recruitTimeTable": [{"timeLength": 10, "recruitPrice": 0}],
+        "recruitConstants": {"maxRecruitTime": 540},
+    },
+    "recruitDetail": "公开招募规则",
+}
 
 
 def test_merge_overlay_and_accumulation(tmp_path):
@@ -126,3 +138,31 @@ def test_validate_keeps_structured_errors_for_corrupt_character_table(tmp_path):
 
     assert not result.ok
     assert any("unparseable excel file" in error for error in result.errors)
+
+
+def test_validate_requires_gacha_table(tmp_path):
+    candidate = tmp_path / "candidate"
+    _mk_tree(candidate, char_names=["阿米娅"])
+    (candidate / "zh_CN/gamedata/excel/gacha_table.json").unlink()
+
+    result = validate_candidate(candidate)
+
+    assert not result.ok
+    assert any("missing required excel file" in e and "gacha_table" in e for e in result.errors)
+
+
+def test_validate_rejects_bad_gacha_table_shapes(tmp_path):
+    candidate = tmp_path / "candidate"
+    _mk_tree(candidate, char_names=["阿米娅"])
+    _write(candidate, "zh_CN/gamedata/excel/gacha_table.json", {
+        "gachaTags": [{"tagId": 1}],  # missing tagName
+        "recruitPool": {"recruitTimeTable": []},  # missing recruitConstants
+        "recruitDetail": "   ",  # blank
+    })
+
+    result = validate_candidate(candidate)
+
+    assert not result.ok
+    assert any("gachaTags" in e for e in result.errors)
+    assert any("recruitPool" in e for e in result.errors)
+    assert any("recruitDetail" in e for e in result.errors)
