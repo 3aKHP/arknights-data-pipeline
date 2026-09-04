@@ -192,8 +192,14 @@ def publish(
     state = _release_state(tag)
     if state is None or _missing_or_invalid_assets(state, asset_paths):
         raise RuntimeError(f"release {tag} is incomplete or has a digest mismatch")
-    edit_cmd = ["gh", "release", "edit", tag, "-R", DIST_REPO, "--draft=false"]
-    if mark_latest:
-        edit_cmd.append("--latest")
+    # Explicit latest control on the publish edit: `gh release edit
+    # --draft=false` alone lets GitHub's default rule ("newest non-draft
+    # release wins") promote a datarev revision to Latest — which 1.7-era
+    # consumers follow via /releases/latest. Pass --latest=true/false
+    # explicitly in both modes.
+    edit_cmd = [
+        "gh", "release", "edit", tag, "-R", DIST_REPO, "--draft=false",
+        "--latest=true" if mark_latest else "--latest=false",
+    ]
     _run_with_retry(edit_cmd, "publish verified release")
     print(f"[publish] published {tag} on {DIST_REPO}")
