@@ -25,6 +25,7 @@ jobs:
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
       LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
       LLM_MODEL: ${{ secrets.LLM_MODEL }}
+      LEDGER_ENDPOINT_URL: ${{ secrets.LEDGER_ENDPOINT_URL }}
       GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
@@ -59,6 +60,34 @@ jobs:
           args=(--workdir work run --publish)
           if [[ "$FORCE_RUN" == "true" ]]; then args+=(--force); fi
           uv run akdp "${args[@]}"
+
+      - name: Upload LLM call ledger
+        # The ledger carries full provider detail and is private evidence;
+        # it goes to a dedicated private endpoint only, never to public
+        # artifacts. Skipped until LEDGER_ENDPOINT_URL is configured.
+        if: ${{ env.LEDGER_ENDPOINT_URL != '' }}
+        env:
+          LEDGER_ENDPOINT_TOKEN: ${{ secrets.LEDGER_ENDPOINT_TOKEN }}
+        run: |
+          if [ ! -s work/llm-ledger.jsonl ]; then
+            echo "No LLM calls this run; nothing to upload."
+            exit 0
+          fi
+          for i in 1 2 3; do
+            code=$(curl --fail-with-body -sS -o /dev/null -w '%{http_code}' \
+              -X POST "$LEDGER_ENDPOINT_URL" \
+              -H "Authorization: Bearer $LEDGER_ENDPOINT_TOKEN" \
+              -H "Content-Type: application/x-ndjson" \
+              -H "X-AKDP-Run-ID: ${GITHUB_RUN_ID}" \
+              -H "X-AKDP-Repository: ${GITHUB_REPOSITORY}" \
+              -H "X-AKDP-Run-At: $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              -H "X-AKDP-Run-Attempt: ${GITHUB_RUN_ATTEMPT}" \
+              --data-binary @work/llm-ledger.jsonl) && exit 0
+            echo "Ledger upload attempt $i failed (HTTP $code); retrying..."
+            sleep $((i * 5))
+          done
+          echo "::error::LLM ledger upload failed after 3 attempts"
+          exit 1
 
       - name: Prepare image pipeline inputs
         run: |
