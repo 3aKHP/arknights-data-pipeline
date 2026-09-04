@@ -9,3 +9,4 @@ spike/*.log
 spike/image-output/
 bin/
 .env
+.zcode/
