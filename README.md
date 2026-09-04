@@ -55,6 +55,15 @@ LLM_MODEL=deepseek-v4-flash                # 或任意兼容模型
 增量策略：候选树中的 `summaries.json` / `event_summaries.json` 由累积合并从基线
 继承，`summarize` 只对缺失条目调 LLM。典型更新 ~15-20 章 + 1-2 活动 ≈ 20 次调用。
 
+验收门禁：每个 LLM 响应必须通过共享验收（`summary_gate`：非空、长度下限、终止符
+黑名单、格式污染、`finish_reason` 分类）才会写入；被拒响应在进程内有界重生成，
+耗尽后经 `failed_details` 令流水线失败关闭。`validate` 阶段对全部库存条目做同样的
+全量扫描（零 LLM 成本），任何缺失或失效条目都会阻断发布——因此本地未配置
+`LLM_API_KEY` 时 `validate` 会因覆盖不全而失败，属预期行为。验收元数据随
+`summaries.meta.json` / `event_summaries.meta.json` 发布；逐尝试调用账本写入
+`work/llm-ledger.jsonl`（含完整供应商明细，仅经私有端点上传，配置
+`LEDGER_ENDPOINT_URL` / `LEDGER_ENDPOINT_TOKEN` Secrets 后生效）。
+
 ## 自动化（GitHub Actions）
 
 `.github/workflows/data-pipeline.yml` 每 2 小时运行一次：`check` 短路时 ~45 秒退出，

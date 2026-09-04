@@ -220,4 +220,62 @@ def validate_candidate(
                 f"e.g. {sorted(source_missing)[:3]}"
             )
 
+    # --- gate 7: summary acceptance (standing release gate)
+    # Full-inventory scan with zero LLM cost: every chapter/event discovered
+    # from story_review_table must be covered, and every shipped entry must
+    # pass the same acceptance gate applied at generation time. This is what
+    # turns "the cache poisoned a release once" into a blocked release.
+    review_path = zh / "gamedata/excel/story_review_table.json"
+    if review_path.is_file():
+        from .summarize import _iter_chapters
+        from .summary_gate import CHAPTER, EVENT, accept_summary
+
+        try:
+            chapters = _iter_chapters(zh)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            chapters = None  # corruption already reported by gates 1/2
+        if chapters is not None:
+            def _load_map(name: str) -> dict:
+                p = zh / name
+                if not p.is_file():
+                    return {}
+                loaded = json.loads(p.read_text(encoding="utf-8"))
+                return loaded if isinstance(loaded, dict) else {}
+
+            chapter_summaries = _load_map("summaries.json")
+            event_summaries = _load_map("event_summaries.json")
+            chapter_missing = chapter_rejected = 0
+            event_missing = event_rejected = 0
+
+            for ch in chapters:
+                key = ch["story_key"]
+                if key not in chapter_summaries:
+                    chapter_missing += 1
+                    res.errors.append(f"summary gate: chapter has no summary: {key}")
+            for key, value in sorted(chapter_summaries.items()):
+                ok, reason = accept_summary(CHAPTER, value if isinstance(value, str) else None)
+                if not ok:
+                    chapter_rejected += 1
+                    res.errors.append(f"summary gate: chapter rejected ({reason}): {key}")
+
+            events = {ch["event_id"] for ch in chapters if ch["event_id"]}
+            for ev in sorted(events):
+                if ev not in event_summaries:
+                    event_missing += 1
+                    res.errors.append(f"summary gate: event has no summary: {ev}")
+            for ev, value in sorted(event_summaries.items()):
+                ok, reason = accept_summary(EVENT, value if isinstance(value, str) else None)
+                if not ok:
+                    event_rejected += 1
+                    res.errors.append(f"summary gate: event rejected ({reason}): {ev}")
+
+            res.metrics["summary_gate"] = {
+                "chapters": len(chapters),
+                "chapter_missing": chapter_missing,
+                "chapter_rejected": chapter_rejected,
+                "events": len(events),
+                "event_missing": event_missing,
+                "event_rejected": event_rejected,
+            }
+
     return res
