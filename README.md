@@ -50,7 +50,10 @@ ASTR/flatc 等转换器来源、归一化/排除政策以及每个包的大小�
 LLM_BASE_URL=https://api.deepseek.com/v1   # 或任意兼容端点
 LLM_API_KEY=sk-...
 LLM_MODEL=deepseek-v4-flash                # 或任意兼容模型
+LLM_EXTRA_BODY={"thinking":{"type":"none"}} # 可选：供应商扩展参数（JSON 对象）
 ```
+
+`LLM_EXTRA_BODY` 会原样合并进 Chat Completions 请求体。对推理型模型（如 deepseek-v4-flash）建议按上例关闭思考模式：思维链 token 计入 `max_tokens`，不关闭时可能以 `finish_reason=length` 且正文为空的形式耗尽预算（2026-09-03 事故空串摘要的根因）。
 
 增量策略：候选树中的 `summaries.json` / `event_summaries.json` 由累积合并从基线
 继承，`summarize` 只对缺失条目调 LLM。典型更新 ~15-20 章 + 1-2 活动 ≈ 20 次调用。

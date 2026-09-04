@@ -279,3 +279,23 @@ def test_no_api_key_ships_partial_and_reports_failures(tmp_path, monkeypatch):
     assert stats.chapters_failed == 1 and stats.events_failed == 1
     assert stats.api_calls == 0
     assert not (tmp_path / "llm-ledger.jsonl").exists()
+
+
+def test_extra_body_merges_provider_extensions(monkeypatch):
+    monkeypatch.setattr(S, "LLM_MODEL", "test-model")
+    monkeypatch.setattr(S, "LLM_EXTRA_BODY", {"thinking": {"type": "none"}})
+    body = S._request_body([{"role": "user", "content": "hi"}], 600)
+    assert body["model"] == "test-model"
+    assert body["max_tokens"] == 600
+    assert body["thinking"] == {"type": "none"}
+
+
+def test_extra_body_invalid_json_degrades_to_empty(monkeypatch, capsys):
+    monkeypatch.setenv("LLM_EXTRA_BODY", "{not json")
+    assert S._load_extra_body() == {}
+    assert "LLM_EXTRA_BODY" in capsys.readouterr().out
+
+
+def test_extra_body_non_object_degrades_to_empty(monkeypatch):
+    monkeypatch.setenv("LLM_EXTRA_BODY", "[1, 2]")
+    assert S._load_extra_body() == {}

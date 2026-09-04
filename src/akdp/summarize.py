@@ -61,6 +61,28 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")
 MAX_CONCURRENCY = int(os.environ.get("LLM_MAX_CONCURRENCY", "8"))
 
+
+def _load_extra_body() -> dict:
+    """Provider-specific request extensions, e.g. DeepSeek's
+    ``{"thinking": {"type": "none"}}`` to disable reasoning. Parsed once at
+    import; invalid JSON degrades to {} with a warning instead of killing
+    the pipeline."""
+    raw = os.environ.get("LLM_EXTRA_BODY", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        print(f"[summarize] WARNING: LLM_EXTRA_BODY is not valid JSON; ignoring: {raw[:100]}")
+        return {}
+    if not isinstance(parsed, dict):
+        print("[summarize] WARNING: LLM_EXTRA_BODY must be a JSON object; ignoring")
+        return {}
+    return parsed
+
+
+LLM_EXTRA_BODY = _load_extra_body()
+
 #: 429/5xx/network errors are retried with full-jitter exponential backoff;
 #: other 4xx are deterministic failures and abort immediately.
 MAX_TRANSPORT_RETRIES = 3
@@ -220,18 +242,25 @@ class _CallResult:
     latency_ms: int
 
 
+def _request_body(messages: list[dict], max_tokens: int) -> dict:
+    """Chat Completions payload; LLM_EXTRA_BODY merges provider extensions."""
+    body = {
+        "model": LLM_MODEL,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.3,
+    }
+    body.update(LLM_EXTRA_BODY)
+    return body
+
+
 def _chat_once(messages: list[dict], max_tokens: int) -> _CallResult:
     """One HTTP call, no retry. Raises _TransportError on failure."""
     if not LLM_API_KEY:
         raise RuntimeError("LLM_API_KEY not set")
 
     url = f"{LLM_BASE_URL.rstrip('/')}/chat/completions"
-    body = json.dumps({
-        "model": LLM_MODEL,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": 0.3,
-    }).encode("utf-8")
+    body = json.dumps(_request_body(messages, max_tokens)).encode("utf-8")
 
     req = urllib.request.Request(
         url,
@@ -339,6 +368,7 @@ def _generate(
             "gate_version": GATE_VERSION,
             "max_tokens": max_tokens,
             "temperature": 0.3,
+            "extra_body_keys": sorted(LLM_EXTRA_BODY),
         }
         try:
             result = _chat_once(messages, max_tokens)
