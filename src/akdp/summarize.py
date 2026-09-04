@@ -73,6 +73,15 @@ PROMPT_VERSION = "story-summaries/v1"
 GATE_VERSION = "summary-gate/v1"
 INPUT_HASH_DOMAIN = "akdp:summarize-input:v1:"
 
+#: Output budgets must cover invisible reasoning tokens too: on
+#: reasoning-capable models (deepseek-v4-flash) thinking counts against
+#: max_tokens, and a tight cap surfaces as finish_reason=length with EMPTY
+#: content — the exact signature of the 2026-09-03 incident (5 empty chapter
+#: summaries + a truncated event summary). These caps leave reasoning ample
+#: headroom; the acceptance gate still fails closed if a cap is ever hit.
+CHAPTER_MAX_TOKENS = 4096
+EVENT_MAX_TOKENS = 8192
+
 # ---------------------------------------------------------------------------
 # Prompts (verbatim from original to preserve summary style)
 # ---------------------------------------------------------------------------
@@ -405,7 +414,7 @@ def _summarize_chapter(ch: dict, text: str, ledger: _Ledger) -> tuple[str, dict]
     content, info = _generate(
         [{"role": "system", "content": SYSTEM_PROMPT},
          {"role": "user", "content": prompt}],
-        max_tokens=600,
+        max_tokens=CHAPTER_MAX_TOKENS,
         level=CHAPTER,
         call_meta={"chapter_key": ch["story_key"], "event_id": ch["event_id"]},
         ledger=ledger,
@@ -423,7 +432,7 @@ def _summarize_event(
     content, info = _generate(
         [{"role": "system", "content": SYSTEM_PROMPT},
          {"role": "user", "content": prompt}],
-        max_tokens=1200,
+        max_tokens=EVENT_MAX_TOKENS,
         level=EVENT,
         call_meta={"event_id": event_id},
         ledger=ledger,
