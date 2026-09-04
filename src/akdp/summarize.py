@@ -62,9 +62,14 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")
 MAX_CONCURRENCY = int(os.environ.get("LLM_MAX_CONCURRENCY", "8"))
 
 
+#: request fields the pipeline owns; LLM_EXTRA_BODY must not silently
+#: override them (provider extensions only)
+_RESERVED_BODY_KEYS = frozenset({"model", "messages", "max_tokens", "temperature"})
+
+
 def _load_extra_body() -> dict:
     """Provider-specific request extensions, e.g. DeepSeek's
-    ``{"thinking": {"type": "none"}}`` to disable reasoning. Parsed once at
+    ``{"thinking": {"type": "disabled"}}`` to disable reasoning. Parsed once at
     import; invalid JSON degrades to {} with a warning instead of killing
     the pipeline."""
     raw = os.environ.get("LLM_EXTRA_BODY", "").strip()
@@ -78,6 +83,12 @@ def _load_extra_body() -> dict:
     if not isinstance(parsed, dict):
         print("[summarize] WARNING: LLM_EXTRA_BODY must be a JSON object; ignoring")
         return {}
+    reserved = sorted(set(parsed) & _RESERVED_BODY_KEYS)
+    if reserved:
+        print(f"[summarize] WARNING: LLM_EXTRA_BODY cannot override pipeline-owned "
+              f"fields {reserved}; dropping them")
+        for key in reserved:
+            parsed.pop(key)
     return parsed
 
 

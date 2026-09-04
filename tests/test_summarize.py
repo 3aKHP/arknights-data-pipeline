@@ -299,3 +299,13 @@ def test_extra_body_invalid_json_degrades_to_empty(monkeypatch, capsys):
 def test_extra_body_non_object_degrades_to_empty(monkeypatch):
     monkeypatch.setenv("LLM_EXTRA_BODY", "[1, 2]")
     assert S._load_extra_body() == {}
+
+
+def test_extra_body_reserved_keys_are_dropped(monkeypatch, capsys):
+    monkeypatch.setenv(
+        "LLM_EXTRA_BODY",
+        '{"model": "evil", "thinking": {"type": "disabled"}, "max_tokens": 1}',
+    )
+    assert S._load_extra_body() == {"thinking": {"type": "disabled"}}
+    out = capsys.readouterr().out
+    assert "max_tokens" in out and "model" in out
