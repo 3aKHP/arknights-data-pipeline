@@ -61,6 +61,39 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")
 MAX_CONCURRENCY = int(os.environ.get("LLM_MAX_CONCURRENCY", "8"))
 
+
+#: request fields the pipeline owns; LLM_EXTRA_BODY must not silently
+#: override them (provider extensions only)
+_RESERVED_BODY_KEYS = frozenset({"model", "messages", "max_tokens", "temperature"})
+
+
+def _load_extra_body() -> dict:
+    """Provider-specific request extensions, e.g. DeepSeek's
+    ``{"thinking": {"type": "disabled"}}`` to disable reasoning. Parsed once at
+    import; invalid JSON degrades to {} with a warning instead of killing
+    the pipeline."""
+    raw = os.environ.get("LLM_EXTRA_BODY", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        print(f"[summarize] WARNING: LLM_EXTRA_BODY is not valid JSON; ignoring: {raw[:100]}")
+        return {}
+    if not isinstance(parsed, dict):
+        print("[summarize] WARNING: LLM_EXTRA_BODY must be a JSON object; ignoring")
+        return {}
+    reserved = sorted(set(parsed) & _RESERVED_BODY_KEYS)
+    if reserved:
+        print(f"[summarize] WARNING: LLM_EXTRA_BODY cannot override pipeline-owned "
+              f"fields {reserved}; dropping them")
+        for key in reserved:
+            parsed.pop(key)
+    return parsed
+
+
+LLM_EXTRA_BODY = _load_extra_body()
+
 #: 429/5xx/network errors are retried with full-jitter exponential backoff;
 #: other 4xx are deterministic failures and abort immediately.
 MAX_TRANSPORT_RETRIES = 3
@@ -72,6 +105,15 @@ RETRY_DELAY_BASE = 2.0  # seconds; full-jitter exponential backoff
 PROMPT_VERSION = "story-summaries/v1"
 GATE_VERSION = "summary-gate/v1"
 INPUT_HASH_DOMAIN = "akdp:summarize-input:v1:"
+
+#: Output budgets must cover invisible reasoning tokens too: on
+#: reasoning-capable models (deepseek-v4-flash) thinking counts against
+#: max_tokens, and a tight cap surfaces as finish_reason=length with EMPTY
+#: content — the exact signature of the 2026-09-03 incident (5 empty chapter
+#: summaries + a truncated event summary). These caps leave reasoning ample
+#: headroom; the acceptance gate still fails closed if a cap is ever hit.
+CHAPTER_MAX_TOKENS = 4096
+EVENT_MAX_TOKENS = 8192
 
 # ---------------------------------------------------------------------------
 # Prompts (verbatim from original to preserve summary style)
@@ -211,18 +253,25 @@ class _CallResult:
     latency_ms: int
 
 
+def _request_body(messages: list[dict], max_tokens: int) -> dict:
+    """Chat Completions payload; LLM_EXTRA_BODY merges provider extensions."""
+    body = {
+        "model": LLM_MODEL,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.3,
+    }
+    body.update(LLM_EXTRA_BODY)
+    return body
+
+
 def _chat_once(messages: list[dict], max_tokens: int) -> _CallResult:
     """One HTTP call, no retry. Raises _TransportError on failure."""
     if not LLM_API_KEY:
         raise RuntimeError("LLM_API_KEY not set")
 
     url = f"{LLM_BASE_URL.rstrip('/')}/chat/completions"
-    body = json.dumps({
-        "model": LLM_MODEL,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": 0.3,
-    }).encode("utf-8")
+    body = json.dumps(_request_body(messages, max_tokens)).encode("utf-8")
 
     req = urllib.request.Request(
         url,
@@ -330,6 +379,7 @@ def _generate(
             "gate_version": GATE_VERSION,
             "max_tokens": max_tokens,
             "temperature": 0.3,
+            "extra_body_keys": sorted(LLM_EXTRA_BODY),
         }
         try:
             result = _chat_once(messages, max_tokens)
@@ -405,7 +455,7 @@ def _summarize_chapter(ch: dict, text: str, ledger: _Ledger) -> tuple[str, dict]
     content, info = _generate(
         [{"role": "system", "content": SYSTEM_PROMPT},
          {"role": "user", "content": prompt}],
-        max_tokens=600,
+        max_tokens=CHAPTER_MAX_TOKENS,
         level=CHAPTER,
         call_meta={"chapter_key": ch["story_key"], "event_id": ch["event_id"]},
         ledger=ledger,
@@ -423,7 +473,7 @@ def _summarize_event(
     content, info = _generate(
         [{"role": "system", "content": SYSTEM_PROMPT},
          {"role": "user", "content": prompt}],
-        max_tokens=1200,
+        max_tokens=EVENT_MAX_TOKENS,
         level=EVENT,
         call_meta={"event_id": event_id},
         ledger=ledger,

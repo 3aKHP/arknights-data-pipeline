@@ -190,7 +190,7 @@ def test_publish_revision_mode_uses_datarev_tag_without_latest(tmp_path, monkeyp
     assert "Game Data V rev 2" in create
     edit = next(c for c in commands if "edit" in c)
     assert "--draft=false" in edit
-    assert "--latest" not in edit and "--latest=false" not in edit
+    assert "--latest=false" in edit and "--latest=true" not in edit
 
 
 def test_publish_revision_enforces_monotonic_revision_numbers(tmp_path, monkeypatch):

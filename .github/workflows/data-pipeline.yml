@@ -25,6 +25,7 @@ jobs:
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
       LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
       LLM_MODEL: ${{ secrets.LLM_MODEL }}
+      LLM_EXTRA_BODY: ${{ secrets.LLM_EXTRA_BODY }}
       LEDGER_ENDPOINT_URL: ${{ secrets.LEDGER_ENDPOINT_URL }}
       GH_REPO: ${{ github.repository }}
     steps:
