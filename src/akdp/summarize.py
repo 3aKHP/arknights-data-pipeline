@@ -9,6 +9,15 @@ event_summaries.json from the baseline merge. Only chapters/events NOT
 already in those files trigger LLM calls. A typical game update costs
 ~10-20 chapter calls + 1-3 event calls, vs ~2500 for a full rebuild.
 
+Every response must pass the shared acceptance gate (summary_gate) before
+it is written: rejected responses are regenerated in-process (bounded) and
+finally reported through failed_details so the pipeline fails closed. Each
+attempt is recorded in a per-run call ledger (work/llm-ledger.jsonl) with
+full provider detail; CI ships that ledger to a private endpoint, it never
+enters any public artifact. Sidecar files summaries.meta.json /
+event_summaries.meta.json record acceptance metadata per key and ship next
+to the data files inside the story zip.
+
 API: any OpenAI Chat Completions compatible endpoint, configured via
   LLM_BASE_URL  (default: https://api.openai.com/v1)
   LLM_API_KEY   (required when work exists)
@@ -20,15 +29,28 @@ the runtime does not fetch or depend on any legacy data repository.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import random
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
+
+from .summary_gate import (
+    CHAPTER,
+    EVENT,
+    SENTINEL_NO_DIALOGUE,
+    accept_summary,
+    classify_finish_reason,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -38,8 +60,18 @@ LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")
 MAX_CONCURRENCY = int(os.environ.get("LLM_MAX_CONCURRENCY", "8"))
-MAX_RETRIES = 3
-RETRY_DELAY = 2.0  # seconds
+
+#: 429/5xx/network errors are retried with full-jitter exponential backoff;
+#: other 4xx are deterministic failures and abort immediately.
+MAX_TRANSPORT_RETRIES = 3
+#: rejected content and transient finish_reason values are regenerated at
+#: most this many times before the call lands in failed_details
+CONTENT_REGEN_ATTEMPTS = 2
+RETRY_DELAY_BASE = 2.0  # seconds; full-jitter exponential backoff
+
+PROMPT_VERSION = "story-summaries/v1"
+GATE_VERSION = "summary-gate/v1"
+INPUT_HASH_DOMAIN = "akdp:summarize-input:v1:"
 
 # ---------------------------------------------------------------------------
 # Prompts (verbatim from original to preserve summary style)
@@ -133,11 +165,54 @@ def extract_chapter_text(raw: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+
+
+def _utcnow() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _sha256_hex(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _fingerprint(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def _sleep_jitter(step: int) -> None:
+    """Full-jitter exponential backoff; step counts from 1."""
+    time.sleep(random.uniform(0, RETRY_DELAY_BASE * (2 ** (step - 1))))
+
+
+# ---------------------------------------------------------------------------
 # API call (generic OpenAI Chat Completions compatible)
 # ---------------------------------------------------------------------------
 
 
-def _call_api(messages: list[dict], max_tokens: int) -> str:
+class _TransportError(RuntimeError):
+    """HTTP or network level failure, classified for retry decisions."""
+
+    def __init__(self, message: str, *, status: int | None):
+        super().__init__(message)
+        self.status = status
+        self.retryable = status is None or status == 429 or status >= 500
+
+
+@dataclass
+class _CallResult:
+    content: str
+    finish_reason: str | None
+    model: str | None
+    response_id: str | None
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    latency_ms: int
+
+
+def _chat_once(messages: list[dict], max_tokens: int) -> _CallResult:
+    """One HTTP call, no retry. Raises _TransportError on failure."""
     if not LLM_API_KEY:
         raise RuntimeError("LLM_API_KEY not set")
 
@@ -158,49 +233,217 @@ def _call_api(messages: list[dict], max_tokens: int) -> str:
         },
     )
 
-    last_error = None
-    for attempt in range(MAX_RETRIES + 1):
+    started = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            payload = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
         try:
-            with urllib.request.urlopen(req, timeout=180) as resp:
-                data = json.loads(resp.read())
-                return data["choices"][0]["message"]["content"].strip()
-        except urllib.error.HTTPError as exc:
-            last_error = exc
             detail = exc.read().decode(errors="replace")
-            if attempt < MAX_RETRIES:
-                wait = RETRY_DELAY * (2 ** attempt)
-                print(f"  HTTP {exc.code}, retrying in {wait}s... ({detail[:200]})")
-                time.sleep(wait)
-        except Exception as exc:
-            last_error = exc
-            if attempt < MAX_RETRIES:
-                wait = RETRY_DELAY * (2 ** attempt)
-                print(f"  {exc}, retrying in {wait}s...")
-                time.sleep(wait)
+        except Exception:  # noqa: BLE001 — best-effort error detail
+            detail = ""
+        raise _TransportError(f"HTTP {exc.code}: {detail[:200]}", status=exc.code) from exc
+    except Exception as exc:  # noqa: BLE001 — timeouts, DNS, bad payload framing
+        raise _TransportError(str(exc), status=None) from exc
+    latency_ms = int((time.monotonic() - started) * 1000)
 
-    raise RuntimeError(f"API call failed after {MAX_RETRIES + 1} attempts: {last_error}")
-
-
-def summarize_chapter(code: str, name: str, event_name: str, tag: str, text: str) -> str:
-    if not text.strip():
-        return "（无对话内容）"
-    prompt = CHAPTER_PROMPT.format(
-        code=code, name=name, event_name=event_name, tag=tag or "无", text=text,
+    choices = payload.get("choices") or []
+    choice = choices[0] if choices else {}
+    message = choice.get("message") or {}
+    usage = payload.get("usage") or {}
+    return _CallResult(
+        content=str(message.get("content") or "").strip(),
+        finish_reason=choice.get("finish_reason"),
+        model=payload.get("model"),
+        response_id=payload.get("id"),
+        prompt_tokens=usage.get("prompt_tokens"),
+        completion_tokens=usage.get("completion_tokens"),
+        latency_ms=latency_ms,
     )
-    return _call_api(
+
+
+class _Ledger:
+    """Append-only per-attempt call ledger with full provider detail.
+
+    The ledger is private evidence: it carries the real endpoint and model
+    names and is POSTed to a private endpoint by CI. It must never be
+    uploaded as a public artifact or embedded in the release manifest —
+    the manifest only receives the sanitized digest computed at package
+    time. Prompts, responses and story text are never recorded.
+    """
+
+    def __init__(self, path: Path, run_meta: dict | None):
+        self.path = path
+        self.run_meta = dict(run_meta or {})
+        self._lock = threading.Lock()
+
+    def write(self, **record: object) -> None:
+        line = json.dumps(record, ensure_ascii=False, sort_keys=True)
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+
+
+def _generate(
+    messages: list[dict],
+    *,
+    max_tokens: int,
+    level: str,
+    call_meta: dict,
+    ledger: _Ledger,
+) -> tuple[str, dict]:
+    """One logical call through transport retries, gate checks, re-rolls.
+
+    Returns (content, sidecar_info). Raises RuntimeError once budgets are
+    exhausted; the caller turns that into failed_details.
+    """
+    logical_id = uuid.uuid4().hex[:12]
+    input_text = messages[-1]["content"]
+    input_hash = _sha256_hex(INPUT_HASH_DOMAIN + input_text)
+    run = ledger.run_meta
+    transport_attempts = 0
+    regen_attempts = 0
+    attempt = 0
+    retry_reason: str | None = None
+
+    while True:
+        attempt += 1
+        common: dict = {
+            "ts": _utcnow(),
+            "run_id": run.get("run_id"),
+            "job_id": run.get("job_id"),
+            "version_id": run.get("version_id"),
+            "level": level,
+            "event_id": call_meta.get("event_id"),
+            "chapter_key": call_meta.get("chapter_key"),
+            "input_sha256": input_hash,
+            "input_chars": len(input_text),
+            "requested_model": LLM_MODEL,
+            "endpoint": LLM_BASE_URL,
+            "endpoint_fingerprint": _fingerprint(LLM_BASE_URL),
+            "provider": "openai-chat-completions",
+            "logical_call_id": logical_id,
+            "attempt": attempt,
+            "retry_reason": retry_reason,
+            "prompt_version": PROMPT_VERSION,
+            "gate_version": GATE_VERSION,
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+        }
+        try:
+            result = _chat_once(messages, max_tokens)
+        except _TransportError as exc:
+            reason = f"transport:{exc.status if exc.status is not None else 'network'}"
+            ledger.write(
+                **common,
+                http_status=exc.status,
+                latency_ms=None,
+                finish_reason=None,
+                actual_model=None,
+                model_fingerprint=None,
+                prompt_tokens=None,
+                completion_tokens=None,
+                output_chars=0,
+                output_sha256=None,
+                verdict="error",
+                reject_reason=reason,
+            )
+            if exc.retryable and transport_attempts < MAX_TRANSPORT_RETRIES:
+                transport_attempts += 1
+                retry_reason = reason
+                print(f"  {reason}, retrying with jittered backoff "
+                      f"({transport_attempts}/{MAX_TRANSPORT_RETRIES})...")
+                _sleep_jitter(transport_attempts)
+                continue
+            raise RuntimeError(f"LLM call failed after {attempt} attempts: {exc}") from exc
+
+        if classify_finish_reason(result.finish_reason) == "accept":
+            ok, reason_tuple = accept_summary(level, result.content)
+            reject_reason = None if ok else reason_tuple
+        else:
+            ok = False
+            reject_reason = f"finish_reason:{result.finish_reason}"
+        model_fingerprint = _fingerprint(result.model or LLM_MODEL)
+        ledger.write(
+            **common,
+            http_status=200,
+            latency_ms=result.latency_ms,
+            finish_reason=result.finish_reason,
+            actual_model=result.model,
+            model_fingerprint=model_fingerprint,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            output_chars=len(result.content),
+            output_sha256=_sha256_hex(result.content) if result.content else None,
+            verdict="pass" if ok else "reject",
+            reject_reason=reject_reason,
+        )
+        if ok:
+            return result.content, {
+                "finish_reason": result.finish_reason,
+                "model_fingerprint": model_fingerprint,
+            }
+        if (classify_finish_reason(result.finish_reason) != "fail"
+                and regen_attempts < CONTENT_REGEN_ATTEMPTS):
+            regen_attempts += 1
+            retry_reason = reject_reason
+            print(f"  {level} summary rejected ({reject_reason}), "
+                  f"regenerating ({regen_attempts}/{CONTENT_REGEN_ATTEMPTS})...")
+            _sleep_jitter(regen_attempts)
+            continue
+        raise RuntimeError(f"{level} summary rejected: {reject_reason}")
+
+
+def _summarize_chapter(ch: dict, text: str, ledger: _Ledger) -> tuple[str, dict]:
+    """Generate one chapter summary; returns (summary, sidecar_info)."""
+    if not text.strip():
+        return SENTINEL_NO_DIALOGUE, {"path": "sentinel"}
+    prompt = CHAPTER_PROMPT.format(
+        code=ch["code"], name=ch["name"], event_name=ch["event_name"], tag=ch["tag"] or "无", text=text,
+    )
+    content, info = _generate(
         [{"role": "system", "content": SYSTEM_PROMPT},
          {"role": "user", "content": prompt}],
         max_tokens=600,
+        level=CHAPTER,
+        call_meta={"chapter_key": ch["story_key"], "event_id": ch["event_id"]},
+        ledger=ledger,
     )
+    return content, {"path": "llm", **info}
 
 
-def summarize_event(event_name: str, full_text: str) -> str:
+def _summarize_event(
+    event_name: str, full_text: str, event_id: str, ledger: _Ledger,
+) -> tuple[str, dict]:
+    """Generate one event-level summary from the full chapter texts."""
+    if not full_text.strip():
+        return SENTINEL_NO_DIALOGUE, {"path": "sentinel"}
     prompt = EVENT_PROMPT.format(event_name=event_name, full_text=full_text)
-    return _call_api(
+    content, info = _generate(
         [{"role": "system", "content": SYSTEM_PROMPT},
          {"role": "user", "content": prompt}],
         max_tokens=1200,
+        level=EVENT,
+        call_meta={"event_id": event_id},
+        ledger=ledger,
     )
+    return content, {"path": "llm", **info}
+
+
+def _meta_entry(info: dict, content: str) -> dict:
+    """Sidecar metadata for one summary key (public, fingerprint-only)."""
+    entry: dict = {
+        "path": info["path"],
+        "prompt_version": PROMPT_VERSION,
+        "accepted_at": _utcnow(),
+    }
+    if info["path"] == "llm":
+        entry["output_sha256"] = _sha256_hex(content)
+        entry["finish_reason"] = info.get("finish_reason")
+        entry["model_fingerprint"] = info.get("model_fingerprint")
+        entry["gate_version"] = GATE_VERSION
+    return entry
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +452,11 @@ def summarize_event(event_name: str, full_text: str) -> str:
 
 STORY_REVIEW_TABLE = "gamedata/excel/story_review_table.json"
 STORY_DIR = "gamedata/story"
+
+SIDECAR_FILES = {
+    "summaries.meta.json": "chapter",
+    "event_summaries.meta.json": "event",
+}
 
 
 def _iter_chapters(zh: Path) -> list[dict]:
@@ -241,7 +489,13 @@ def _iter_chapters(zh: Path) -> list[dict]:
     return chapters
 
 
-def run_summarize(candidate: Path) -> SummarizeStats:
+def _load_json(path: Path, default):
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    return default
+
+
+def run_summarize(candidate: Path, run_meta: dict | None = None) -> SummarizeStats:
     """Generate missing chapter and event summaries incrementally.
 
     Reads existing summaries from the candidate tree (carried by merge),
@@ -249,6 +503,11 @@ def run_summarize(candidate: Path) -> SummarizeStats:
     """
     zh = candidate / "zh_CN"
     stats = SummarizeStats()
+
+    meta = dict(run_meta or {})
+    meta.setdefault("run_id", os.environ.get("GITHUB_RUN_ID"))
+    meta.setdefault("job_id", os.environ.get("GITHUB_JOB"))
+    ledger = _Ledger(candidate.parent / "llm-ledger.jsonl", meta)
 
     chapters = _iter_chapters(zh)
     stats.chapters_total = len(chapters)
@@ -258,12 +517,10 @@ def run_summarize(candidate: Path) -> SummarizeStats:
     # Load existing summaries (the "cache" — carried by cumulative merge)
     summaries_path = zh / "summaries.json"
     event_summaries_path = zh / "event_summaries.json"
-    chapter_summaries: dict[str, str] = {}
-    event_summaries: dict[str, str] = {}
-    if summaries_path.exists():
-        chapter_summaries = json.loads(summaries_path.read_text(encoding="utf-8"))
-    if event_summaries_path.exists():
-        event_summaries = json.loads(event_summaries_path.read_text(encoding="utf-8"))
+    chapter_summaries: dict[str, str] = _load_json(summaries_path, {})
+    event_summaries: dict[str, str] = _load_json(event_summaries_path, {})
+    chapter_meta: dict[str, dict] = _load_json(zh / "summaries.meta.json", {})
+    event_meta: dict[str, dict] = _load_json(zh / "event_summaries.meta.json", {})
 
     # --- Phase 1: chapter summaries (incremental) ---
     current_keys = {ch["story_key"] for ch in chapters}
@@ -271,7 +528,7 @@ def run_summarize(candidate: Path) -> SummarizeStats:
     pending = [ch for ch in chapters if ch["story_key"] not in chapter_summaries]
     stats.chapters_reused = len(chapters) - len(pending)
 
-    # Collect full texts for dirty events (needed regardless of API key)
+    # Collect full texts for dirty events (needed regardless of api key)
     chapter_texts: dict[str, str] = {}
 
     if pending and not LLM_API_KEY:
@@ -281,24 +538,26 @@ def run_summarize(candidate: Path) -> SummarizeStats:
     elif pending:
         print(f"[summarize] chapters: reuse={stats.chapters_reused} generate={len(pending)}")
 
-        def _do_chapter(ch: dict) -> tuple[str, str, str]:
+        def _do_chapter(ch: dict) -> tuple[str, str, str, dict]:
             raw = json.loads(Path(ch["story_path"]).read_text(encoding="utf-8"))
             text = extract_chapter_text(raw)
-            summary = summarize_chapter(ch["code"], ch["name"], ch["event_name"], ch["tag"], text)
-            return ch["story_key"], summary, text
+            summary, info = _summarize_chapter(ch, text, ledger)
+            return ch["story_key"], summary, text, info
 
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENCY) as pool:
             futures = {pool.submit(_do_chapter, ch): ch for ch in pending}
             for future in as_completed(futures):
                 ch = futures[future]
                 try:
-                    key, summary, text = future.result()
+                    key, summary, text, info = future.result()
                     chapter_summaries[key] = summary
                     chapter_texts[key] = text
+                    chapter_meta[key] = _meta_entry(info, summary)
                     stats.chapters_generated += 1
-                    stats.api_calls += 1
+                    if info["path"] == "llm":
+                        stats.api_calls += 1
                     print(f"  [{stats.chapters_generated}/{len(pending)}] {ch['code']} {ch['name']} ({len(summary)} chars)")
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     stats.chapters_failed += 1
                     stats.failed_details.append({"type": "chapter", "key": ch["story_key"], "error": str(exc)})
                     print(f"  FAILED {ch['code']} {ch['name']}: {exc}", flush=True)
@@ -347,7 +606,7 @@ def run_summarize(candidate: Path) -> SummarizeStats:
                         try:
                             raw = json.loads(Path(ch["story_path"]).read_text(encoding="utf-8"))
                             chapter_texts[sk] = extract_chapter_text(raw)
-                        except Exception:
+                        except Exception:  # noqa: BLE001
                             chapter_texts[sk] = ""
 
             ev_data["parts"] = []
@@ -362,14 +621,14 @@ def run_summarize(candidate: Path) -> SummarizeStats:
                 header += f" {ch['name']} ---"
                 ev_data["parts"].append(f"{header}\n{text}")
 
-        def _do_event(ev_id: str, ev_data: dict) -> tuple[str, str]:
-            parts = ev_data["parts"]
-            if len(parts) <= 1:
-                # Single-chapter events: truncate the chapter text, no API call
-                text = parts[0].split("\n", 1)[-1] if parts else ""
-                return ev_id, text[:800]
-            full_text = "\n\n".join(parts)
-            return ev_id, summarize_event(ev_data["event_name"], full_text)
+        def _do_event(ev_id: str, ev_data: dict) -> tuple[str, str, dict]:
+            # Every event gets a real LLM summary, single-chapter included;
+            # events with no readable text fall back to the sentinel.
+            if not ev_data["parts"]:
+                return ev_id, SENTINEL_NO_DIALOGUE, {"path": "sentinel"}
+            full_text = "\n\n".join(ev_data["parts"])
+            summary, info = _summarize_event(ev_data["event_name"], full_text, ev_id, ledger)
+            return ev_id, summary, info
 
         sorted_events = sorted(events.items(), key=lambda x: len(x[1]["parts"]), reverse=True)
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENCY) as pool:
@@ -378,16 +637,14 @@ def run_summarize(candidate: Path) -> SummarizeStats:
                 ev_id = futures[future]
                 ev_data = events[ev_id]
                 try:
-                    result_id, summary = future.result()
+                    result_id, summary, info = future.result()
                     event_summaries[result_id] = summary
-                    # Only count as generated if it wasn't a single-chapter truncation
-                    if len(ev_data["parts"]) > 1:
-                        stats.events_generated += 1
+                    event_meta[result_id] = _meta_entry(info, summary)
+                    stats.events_generated += 1
+                    if info["path"] == "llm":
                         stats.api_calls += 1
-                    else:
-                        stats.events_reused += 1
                     print(f"  event {ev_data['event_name']}: {len(ev_data['parts'])} chapters → {len(summary)} chars")
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     stats.events_failed += 1
                     stats.failed_details.append({"type": "event", "key": ev_id, "error": str(exc)})
                     print(f"  FAILED event {ev_data['event_name']}: {exc}", flush=True)
@@ -399,6 +656,15 @@ def run_summarize(candidate: Path) -> SummarizeStats:
     )
     event_summaries_path.write_text(
         json.dumps(event_summaries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    # Sidecars track the data files one-to-one: prune stale keys the same way
+    chapter_meta = {k: v for k, v in chapter_meta.items() if k in chapter_summaries}
+    event_meta = {k: v for k, v in event_meta.items() if k in event_summaries}
+    (zh / "summaries.meta.json").write_text(
+        json.dumps(chapter_meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (zh / "event_summaries.meta.json").write_text(
+        json.dumps(event_meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
     print(f"[summarize] done: chapters +{stats.chapters_generated}/{stats.chapters_failed}fail, "

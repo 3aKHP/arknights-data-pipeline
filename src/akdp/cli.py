@@ -153,7 +153,12 @@ def cmd_story(args: argparse.Namespace) -> int:
 
 
 def cmd_summarize(args: argparse.Namespace) -> int:
-    stats = summarize_mod.run_summarize(args.workdir / "candidate")
+    merge_path = args.workdir / "merge.json"
+    merge_info = json.loads(merge_path.read_text(encoding="utf-8")) if merge_path.exists() else {}
+    stats = summarize_mod.run_summarize(
+        args.workdir / "candidate",
+        run_meta={"version_id": (merge_info.get("source") or {}).get("versionId")},
+    )
     (args.workdir / "summarize.json").write_text(
         json.dumps(stats.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
