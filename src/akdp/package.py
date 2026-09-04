@@ -71,6 +71,36 @@ def _tool_provenance(tool_versions: dict | None) -> dict:
     return tools
 
 
+def _llm_digest(ledger_path: Path | None) -> dict:
+    """Sanitized public digest of the per-run LLM call ledger.
+
+    The ledger itself is private evidence with full provider detail; this
+    digest carries only counts, hashes and irreversible fingerprints.
+    """
+    if ledger_path is None or not ledger_path.is_file():
+        return {}
+    from collections import Counter
+
+    records = []
+    for line in ledger_path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            records.append(json.loads(line))
+    if not records:
+        return {}
+    return {
+        "attempts": len(records),
+        "verdicts": dict(sorted(Counter(
+            str(r.get("verdict")) for r in records).items())),
+        "endpoint_fingerprints": sorted({
+            r["endpoint_fingerprint"] for r in records if r.get("endpoint_fingerprint")}),
+        "model_fingerprints": sorted({
+            r["model_fingerprint"] for r in records if r.get("model_fingerprint")}),
+        "ledger_sha256": _sha256(ledger_path),
+        "prompt_version": records[0].get("prompt_version"),
+        "gate_version": records[0].get("gate_version"),
+    }
+
+
 def package_candidate(
     candidate: Path,
     dist: Path,
@@ -82,10 +112,14 @@ def package_candidate(
     summarize_stats: dict | None = None,
     tool_versions: dict | None = None,
     normalization: dict | None = None,
+    revision: int = 1,
+    llm_ledger: Path | None = None,
 ) -> dict:
     """Build zh_CN-excel.zip / zh_CN-levels.zip / zh_CN.zip + manifest.json.
 
-    Returns the manifest dict.
+    Returns the manifest dict. `revision` becomes manifest
+    publicationRevision: 1 for normal releases, N >= 2 for datarev repair
+    revisions of the same source versionId.
     """
     zh = candidate / "zh_CN"
     dist.mkdir(parents=True, exist_ok=True)
@@ -120,6 +154,7 @@ def package_candidate(
 
     manifest = {
         "pipelineVersion": __version__,
+        "publicationRevision": revision,
         "pipeline": _git_provenance(),
         "contractVersion": contract.CONTRACT_VERSION,
         "source": source_info or {},
@@ -129,6 +164,7 @@ def package_candidate(
         "story": story_stats or {},
         "summarize": summarize_stats or {},
         "validation": validation or {},
+        "llm": _llm_digest(llm_ledger),
         "assets": {
             name: {"sha256": _sha256(p), "size": p.stat().st_size}
             for name, p in assets.items()
