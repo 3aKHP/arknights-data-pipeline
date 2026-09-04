@@ -1,8 +1,13 @@
 """Baseline handling: download the current factory release and extract it.
 
-Primary source: the factory repo's latest Release (single release, three data assets
-and an optional manifest). If no factory Release exists, the operator must provide a
-controlled local baseline; this pipeline never fetches the legacy upstream repos.
+Primary source: the newest data Release across both tag namespaces —
+``data-<versionId>`` normal releases and ``datarev-<versionId>-r<N>``
+immutable repair revisions — compared as (versionId, revision) tuples, so
+a published revision supersedes the original release it repairs. Without
+this, repaired summaries would never enter the normal lineage and every
+subsequent normal release would re-ship the broken baseline entries.
+If no data Release exists, the operator must provide a controlled local
+baseline; this pipeline never fetches the legacy upstream repos.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from . import contract
+from .check import parse_release_tag
 from .package import _sha256
 from .publish import DIST_REPO
 
@@ -32,9 +38,46 @@ def _gh_download(repo: str, tag: str | None, asset: str, dest: Path) -> None:
         raise RuntimeError(f"baseline download failed: {' '.join(cmd)}\n{proc.stderr}")
 
 
-def _factory_release_info() -> dict | None:
+def _list_release_tags() -> list[str]:
     proc = subprocess.run(
-        ["gh", "release", "view", "-R", DIST_REPO, "--json", "tagName,isDraft,assets"],
+        ["gh", "release", "list", "-R", DIST_REPO,
+         "--json", "tagName,isDraft", "--limit", "200"],
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0:
+        error = (proc.stderr or proc.stdout).lower()
+        if "no releases" in error or "not found" in error or "404" in error:
+            return []
+        raise RuntimeError(f"factory release listing failed: {proc.stderr.strip()}")
+    try:
+        releases = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("factory release listing returned invalid JSON") from exc
+    return [
+        rel["tagName"] for rel in releases
+        if not rel.get("isDraft") and isinstance(rel.get("tagName"), str)
+    ]
+
+
+def select_baseline_release(tags: list[str]) -> tuple[str, tuple[str, int]] | None:
+    """Pick the newest (versionId, revision) data release from tag names."""
+    best: tuple[str, tuple[str, int]] | None = None
+    for tag in tags:
+        parsed = parse_release_tag(tag)
+        if parsed is None:
+            continue
+        if best is None or parsed > best[1]:
+            best = (tag, parsed)
+    return best
+
+
+def _factory_release_info() -> dict | None:
+    selected = select_baseline_release(_list_release_tags())
+    if selected is None:
+        return None
+    proc = subprocess.run(
+        ["gh", "release", "view", selected[0], "-R", DIST_REPO,
+         "--json", "tagName,isDraft,assets"],
         capture_output=True, text=True, check=False,
     )
     if proc.returncode != 0:
@@ -82,7 +125,8 @@ def _verify_manifest(staging: Path, release: dict) -> None:
         if not isinstance(source, dict):
             raise TypeError("manifest source must be an object")
         source_version = source.get("versionId")
-        if tag.startswith("data-") and source_version != tag.removeprefix("data-"):
+        parsed = parse_release_tag(tag)
+        if parsed is not None and source_version != parsed[0]:
             raise ValueError("manifest source version does not match release tag")
         for name in (contract.EXCEL_ASSET, contract.LEVELS_ASSET, contract.STORY_ASSET):
             expected = manifest["assets"][name]

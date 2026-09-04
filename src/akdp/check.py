@@ -55,6 +55,30 @@ def parse_version_id_from_tag(tag: str) -> str | None:
     return m.group("vid") if m else None
 
 
+#: data release tag namespaces: data-<versionId> is a normal release
+#: (revision 1); datarev-<versionId>-r<N> is an immutable repair revision.
+#: The revision namespace is invisible to 1.7-era consumers (they filter on
+#: the data- prefix / the GitHub latest flag), so it must never carry it.
+_DATA_TAG_RE = re.compile(r"^data-(?P<vid>.+)$")
+_DATAREV_TAG_RE = re.compile(r"^datarev-(?P<vid>.+)-r(?P<rev>\d+)$")
+
+
+def parse_release_tag(tag: str) -> tuple[str, int] | None:
+    """Parse a data release tag into (versionId, publicationRevision).
+
+    Returns None for anything that is not a data release (images-*,
+    upstream-*, gamedata-*, ...). datarev- wins over data- for equal vids
+    because the tuple orders on the revision.
+    """
+    m = _DATAREV_TAG_RE.match(tag)
+    if m:
+        return m.group("vid"), int(m.group("rev"))
+    m = _DATA_TAG_RE.match(tag)
+    if m:
+        return m.group("vid"), 1
+    return None
+
+
 #: the factory repo is the distribution repo
 DIST_REPO = "3aKHP/arknights-data-pipeline"
 

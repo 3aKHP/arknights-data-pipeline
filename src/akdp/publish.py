@@ -19,6 +19,10 @@ from .package import _sha256
 #: this repo is the distribution repo
 DIST_REPO = "3aKHP/arknights-data-pipeline"
 TAG_PREFIX = "data-"
+#: immutable repair revisions live in their own tag namespace so 1.7-era
+#: consumers (which filter on the data- prefix or follow the GitHub latest
+#: flag) never see them; they are never marked --latest
+DATAREV_TAG_PREFIX = "datarev-"
 
 #: all assets go into a single release
 RELEASE_ASSETS = [
@@ -75,24 +79,77 @@ def _missing_or_invalid_assets(state: dict, asset_paths: list[Path]) -> list[Pat
             if not _asset_matches(path, remote.get(path.name, {}))]
 
 
-def publish(dist: Path, *, source_id: str, title_suffix: str, dry_run: bool = True) -> None:
+def _existing_revisions(source_id: str) -> list[int]:
+    """Publication revisions already published for this source version."""
+    proc = subprocess.run(
+        ["gh", "release", "list", "-R", DIST_REPO,
+         "--json", "tagName,isDraft", "--limit", "500"],
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"release listing failed: {proc.stderr.strip()}")
+    prefix = f"{DATAREV_TAG_PREFIX}{source_id}-r"
+    revisions = []
+    for rel in json.loads(proc.stdout):
+        tag = rel.get("tagName")
+        if isinstance(tag, str) and tag.startswith(prefix) and not rel.get("isDraft"):
+            tail = tag[len(prefix):]
+            if tail.isdigit():
+                revisions.append(int(tail))
+    return revisions
+
+
+def publish(
+    dist: Path,
+    *,
+    source_id: str,
+    title_suffix: str,
+    dry_run: bool = True,
+    revision: int = 1,
+) -> None:
     """Publish dist assets as a single release.
+
+    revision=1 publishes the normal data-<versionId> release and marks it
+    --latest. revision>=2 publishes an immutable datarev-<versionId>-r<N>
+    repair revision: never --latest, and N must strictly exceed every
+    revision already published for the same versionId.
 
     Two-phase: create the release (lightweight), then upload assets one by
     one with retries. This isolates network failures on large uploads.
     """
     manifest = json.loads((dist / "manifest.json").read_text(encoding="utf-8"))
+    manifest_revision = int(manifest.get("publicationRevision", 1))
+    if manifest_revision != revision:
+        raise ValueError(
+            f"manifest publicationRevision {manifest_revision} does not match "
+            f"requested revision {revision}"
+        )
 
-    tag = f"{TAG_PREFIX}{source_id}"
+    if revision >= 2:
+        max_existing = max(_existing_revisions(source_id), default=1)
+        if revision <= max_existing:
+            raise ValueError(
+                f"revision {revision} must exceed the already published "
+                f"revision {max_existing} for {source_id}"
+            )
+        tag = f"{DATAREV_TAG_PREFIX}{source_id}-r{revision}"
+        title = f"Game Data {title_suffix} rev {revision}"
+        mark_latest = False
+    else:
+        tag = f"{TAG_PREFIX}{source_id}"
+        title = f"Game Data {title_suffix}"
+        mark_latest = True
+
     asset_paths = [dist / name for name in RELEASE_ASSETS]
     missing = [p.name for p in asset_paths if not p.exists()]
     if missing:
         raise FileNotFoundError(f"missing dist assets: {missing}")
 
     if dry_run:
-        print(f"[publish:dry-run] {DIST_REPO} tag={tag}")
+        print(f"[publish:dry-run] {DIST_REPO} tag={tag} (revision {revision})")
         print(f"  assets: {[p.name for p in asset_paths]}")
-        print(f"  title:  Game Data {title_suffix}")
+        print(f"  title:  {title}")
+        print(f"  latest: {mark_latest}")
         return
 
     # Keep the release draft until every asset has been uploaded and verified.
@@ -107,7 +164,7 @@ def publish(dist: Path, *, source_id: str, title_suffix: str, dry_run: bool = Tr
         _run_with_retry([
             "gh", "release", "create", tag,
             "-R", DIST_REPO,
-            "--title", f"Game Data {title_suffix}",
+            "--title", title,
             "--notes-file", str(notes_file),
             "--draft",
             "--latest=false",
@@ -135,8 +192,8 @@ def publish(dist: Path, *, source_id: str, title_suffix: str, dry_run: bool = Tr
     state = _release_state(tag)
     if state is None or _missing_or_invalid_assets(state, asset_paths):
         raise RuntimeError(f"release {tag} is incomplete or has a digest mismatch")
-    _run_with_retry(
-        ["gh", "release", "edit", tag, "-R", DIST_REPO, "--draft=false", "--latest"],
-        "publish verified release",
-    )
+    edit_cmd = ["gh", "release", "edit", tag, "-R", DIST_REPO, "--draft=false"]
+    if mark_latest:
+        edit_cmd.append("--latest")
+    _run_with_retry(edit_cmd, "publish verified release")
     print(f"[publish] published {tag} on {DIST_REPO}")

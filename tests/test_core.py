@@ -94,6 +94,36 @@ def test_validate_record_regression(tmp_path):
     assert any("record regression" in e for e in res.errors)
 
 
+def test_package_stamps_publication_revision_and_llm_digest(tmp_path):
+    candidate = tmp_path / "candidate" / "zh_CN"
+    _write(candidate, "gamedata/excel/character_table.json", {"char_1": {"rarity": "TIER_5"}})
+    _write(candidate, "gamedata/levels/enemydata/enemy_database.json", {"enemies": []})
+    ledger = tmp_path / "llm-ledger.jsonl"
+    records = [
+        {"verdict": "pass", "endpoint_fingerprint": "aaaa1111aaaa1111",
+         "model_fingerprint": "bbbb2222bbbb2222", "prompt_version": "pv",
+         "gate_version": "gv", "endpoint": "https://llm.example/v1"},
+        {"verdict": "reject", "model_fingerprint": "bbbb2222bbbb2222",
+         "prompt_version": "pv", "gate_version": "gv"},
+    ]
+    ledger.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    manifest = package_candidate(
+        candidate.parent, tmp_path / "dist", revision=2, llm_ledger=ledger)
+
+    assert manifest["publicationRevision"] == 2
+    digest = manifest["llm"]
+    assert digest["attempts"] == 2
+    assert digest["verdicts"] == {"pass": 1, "reject": 1}
+    assert digest["endpoint_fingerprints"] == ["aaaa1111aaaa1111"]
+    assert digest["ledger_sha256"] == hashlib.sha256(ledger.read_bytes()).hexdigest()
+    assert "https://" not in json.dumps(digest)  # public layer: fingerprints only
+
+    plain = package_candidate(candidate.parent, tmp_path / "dist2")
+    assert plain["publicationRevision"] == 1
+    assert plain["llm"] == {}
+
+
 # --- summary acceptance release gate (gate 7) ---
 
 _GOOD_CHAPTER_SUMMARY = "话" * 60 + "。"

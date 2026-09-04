@@ -203,6 +203,8 @@ def cmd_package(args: argparse.Namespace) -> int:
         summarize_stats=summarize_stats,
         tool_versions=_tool_versions(),
         normalization=policy_manifest(),
+        revision=getattr(args, "revision", 1) or 1,
+        llm_ledger=workdir / "llm-ledger.jsonl",
     )
     for name, meta in manifest["assets"].items():
         print(f"packaged {name} ({meta['size'] / 1e6:.1f} MB, sha256 {meta['sha256'][:12]}…)")
@@ -217,6 +219,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
     publish_mod.publish(
         workdir / "dist", source_id=source_id,
         title_suffix=source_id, dry_run=not args.execute,
+        revision=getattr(args, "revision", 1) or 1,
     )
     return 0
 
@@ -592,12 +595,14 @@ def main() -> int:
     p = sub.add_parser("summarize", help="generate incremental LLM story/event summaries")
     p.set_defaults(func=cmd_summarize)
 
-    for name, func, help_ in (
-        ("merge", cmd_merge, "normalize + merge into candidate tree"),
-        ("package", cmd_package, "build distribution zips + manifest"),
-    ):
-        p = sub.add_parser(name, help=help_)
-        p.set_defaults(func=func)
+    p = sub.add_parser("merge", help="normalize + merge into candidate tree")
+    p.set_defaults(func=cmd_merge)
+
+    p = sub.add_parser("package", help="build distribution zips + manifest")
+    p.add_argument("--revision", type=int, default=1,
+                   help="publicationRevision stamped into the manifest "
+                        "(>=2 for datarev repair revisions)")
+    p.set_defaults(func=cmd_package)
 
     p = sub.add_parser("validate", help="run validation gates")
     p.add_argument("--probes-file", type=Path, default=Path("config/probes.json"))
@@ -607,6 +612,9 @@ def main() -> int:
 
     p = sub.add_parser("publish", help="publish releases (dry-run by default)")
     p.add_argument("--execute", action="store_true", help="actually create GitHub releases")
+    p.add_argument("--revision", type=int, default=1,
+                   help="1 publishes data-<versionId>; >=2 publishes an immutable "
+                        "datarev-<versionId>-r<N> repair revision (never --latest)")
     p.set_defaults(func=cmd_publish)
 
     p = sub.add_parser("images-fetch", help="download changed chararts/skinpack AB bundles")

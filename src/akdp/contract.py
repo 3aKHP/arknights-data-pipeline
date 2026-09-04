@@ -50,7 +50,8 @@ CONTRACT_VERSION = "prts-mcp-data/v1"
 TORAPPU_FLATC_COMMIT = "37e645f4528248b639b63c35dbb63ee7ae64a315"
 TORAPPU_FLATC_SHA256 = "b5adf3dbc4867a3f08acf6e30f32671f114d189093da07453ff2764c6acdd925"
 
-#: index files at zh_CN/ root in the story zip (ASTR-generated)
+#: index files at zh_CN/ root in the story zip (ASTR-generated indexes plus
+#: the summary acceptance sidecars; all optional in the zip)
 STORY_INDEX_FILES = [
     "extrastory.json",
     "chardict.json",
@@ -58,6 +59,8 @@ STORY_INDEX_FILES = [
     "storyinfo.json",
     "summaries.json",
     "event_summaries.json",
+    "summaries.meta.json",
+    "event_summaries.meta.json",
 ]
 
 #: key tables whose top-level record counts are tracked for regression checks
