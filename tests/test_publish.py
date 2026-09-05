@@ -13,7 +13,14 @@ def _make_dist(root: Path, *, revision: int | None = None) -> tuple[Path, dict[s
     for name in (contract.EXCEL_ASSET, contract.LEVELS_ASSET, contract.STORY_ASSET):
         path = dist / name
         path.write_bytes(name.encode("utf-8"))
-    manifest: dict = {"assets": {}}
+    manifest: dict = {
+        "contractVersion": contract.CONTRACT_VERSION,
+        "source": {"versionId": "test" if revision is None else "V"},
+        "validation": {"errors": []},
+        "assets": {name: {"size": (dist / name).stat().st_size,
+                          "sha256": hashlib.sha256((dist / name).read_bytes()).hexdigest()}
+                   for name in (contract.EXCEL_ASSET, contract.LEVELS_ASSET, contract.STORY_ASSET)},
+    }
     if revision is not None:
         manifest["publicationRevision"] = revision
     (dist / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -253,6 +260,7 @@ def test_verify_manifest_accepts_datarev_tag(tmp_path):
         assets[name] = {"sha256": _sha256(p), "size": p.stat().st_size}
     manifest = {
         "contractVersion": contract.CONTRACT_VERSION,
+        "publicationRevision": 2,
         "source": {"versionId": "V"},
         "assets": assets,
     }
@@ -263,3 +271,47 @@ def test_verify_manifest_accepts_datarev_tag(tmp_path):
     (staging / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(RuntimeError, match="does not match"):
         _verify_manifest(staging, {"tagName": "datarev-V-r2"})
+
+
+def test_baseline_revision_requires_manifest(tmp_path):
+    from akdp.baseline import _verify_manifest
+    with pytest.raises(RuntimeError, match="manifest"):
+        _verify_manifest(tmp_path, {"tagName": "datarev-V-r2"})
+
+
+def test_baseline_revision_must_match_manifest(tmp_path):
+    from akdp.baseline import _verify_manifest
+    (tmp_path / "manifest.json").write_text(json.dumps({
+        "contractVersion": contract.CONTRACT_VERSION,
+        "source": {"versionId": "V"}, "publicationRevision": 3,
+    }))
+    with pytest.raises(RuntimeError, match="revision"):
+        _verify_manifest(tmp_path, {"tagName": "datarev-V-r2"})
+
+
+@pytest.mark.parametrize("bad", ["source", "hash", "validation", "revision"])
+def test_publish_checks_candidate_before_remote_calls(tmp_path, monkeypatch, bad):
+    dist, _ = _make_dist(tmp_path, revision=2)
+    manifest_path = dist / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    if bad == "source":
+        manifest["source"]["versionId"] = "other"
+    elif bad == "hash":
+        (dist / contract.STORY_ASSET).write_bytes(b"changed")
+    elif bad == "validation":
+        manifest["validation"]["errors"] = ["summary rejected"]
+    else:
+        manifest["publicationRevision"] = 2.5
+    manifest_path.write_text(json.dumps(manifest))
+    monkeypatch.setattr(publish, "_existing_revisions", lambda _: pytest.fail("remote called before preflight"))
+    with pytest.raises(ValueError):
+        publish.publish(dist, source_id="V", title_suffix="V", dry_run=False, revision=2)
+
+
+def test_revision_public_race_never_clobbers_assets(tmp_path, monkeypatch):
+    dist, _ = _make_dist(tmp_path, revision=2)
+    monkeypatch.setattr(publish, "_existing_revisions", lambda _: [])
+    monkeypatch.setattr(publish, "_release_state", lambda _: {"isDraft": False, "assets": []})
+    monkeypatch.setattr(publish, "_run_with_retry", lambda *a: pytest.fail("public revision mutated"))
+    with pytest.raises(ValueError, match="immutable"):
+        publish.publish(dist, source_id="V", title_suffix="V", dry_run=False, revision=2)

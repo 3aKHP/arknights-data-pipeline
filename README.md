@@ -12,7 +12,7 @@
    每次发布 = 上一版 Release 基线 + 新解包结果的合并，历史内容只增不减。
 2. **可验证**：每次发布附带 manifest（源版本、工具版本、包哈希、记录指标、
    排除项、合并统计）；校验门不过则不发布（fail-closed）。
-3. **可回滚**：Release 序列即历史档案，回滚 = 将旧 Release 重新标记为 latest。
+3. **可追溯恢复**：Release 序列保留历史档案；现代消费者按源版本与发布修订号比较更新，恢复数据使用新的向前修订，修改 Latest 标记不构成回滚。
 4. **统一分发**：一个 `data-<versionId>` Release 带四个 asset，替代旧的两个 fork
    仓库 + 两种 tag 前缀的历史模式。
 
@@ -66,6 +66,23 @@ LLM_EXTRA_BODY={"thinking":{"type":"disabled"}} # 可选：供应商扩展参数
 `summaries.meta.json` / `event_summaries.meta.json` 发布；逐尝试调用账本写入
 `work/llm-ledger.jsonl`（含完整供应商明细，仅经私有端点上传，配置
 `LEDGER_ENDPOINT_URL` / `LEDGER_ENDPOINT_TOKEN` Secrets 后生效）。
+
+已有 sidecar 条目必须与正文 SHA-256、`finish_reason=stop` 和生成路径一致；没有 sidecar 的历史摘要保留正文门禁，不伪造历史调用证据。LLM 返回的“无对话内容”不能冒充确定性哨兵。失败运行也上传账本，公开错误信息只保留类别与状态码。
+
+### 手动修订发布
+
+修复在独立工作目录中人工完成：校验源 Release 后，只删除已确认失效的摘要缓存键及对应 sidecar 条目，调用现有增量摘要命令。活动摘要继续读取全部章节原始文本。对供应商处理状态不确定的失败，先核查私有账本及供应商记录；本流程不提供一键失效或全量重生成命令。
+
+```bash
+uv run akdp --workdir <repair-workdir> summarize --revision 2
+uv run akdp --workdir <repair-workdir> validate
+uv run akdp --workdir <repair-workdir> package --revision 2
+uv run akdp --workdir <repair-workdir> publish --revision 2
+# 审阅候选包、摘要内容与发布计划后：
+uv run akdp --workdir <repair-workdir> publish --revision 2 --execute
+```
+
+`publicationRevision` 在普通 `data-<versionId>` 发布中为 1；修订从 2 起递增，使用 `datarev-<versionId>-r<N>`，不标 Latest。发布前核对 manifest 源身份、修订号、校验结果及本地资产哈希，已经公开的修订资产不可覆盖。保留原包与私有账本；修订后通过 PRTS-MCP 双实现验证发现、下载、校验、激活和摘要工具输出。下一次正常发布以最高 `(versionId, revision)` 的正式数据包为基线继承修复内容。
 
 ## 自动化（GitHub Actions）
 

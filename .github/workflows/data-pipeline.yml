@@ -66,7 +66,7 @@ jobs:
         # The ledger carries full provider detail and is private evidence;
         # it goes to a dedicated private endpoint only, never to public
         # artifacts. Skipped until LEDGER_ENDPOINT_URL is configured.
-        if: ${{ env.LEDGER_ENDPOINT_URL != '' }}
+        if: ${{ always() && env.LEDGER_ENDPOINT_URL != '' }}
         env:
           LEDGER_ENDPOINT_TOKEN: ${{ secrets.LEDGER_ENDPOINT_TOKEN }}
         run: |
@@ -75,7 +75,7 @@ jobs:
             exit 0
           fi
           for i in 1 2 3; do
-            code=$(curl --fail-with-body -sS -o /dev/null -w '%{http_code}' \
+            code=$(curl --fail-with-body -sS --connect-timeout 15 --max-time 120 -o /dev/null -w '%{http_code}' \
               -X POST "$LEDGER_ENDPOINT_URL" \
               -H "Authorization: Bearer $LEDGER_ENDPOINT_TOKEN" \
               -H "Content-Type: application/x-ndjson" \
@@ -83,7 +83,7 @@ jobs:
               -H "X-AKDP-Repository: ${GITHUB_REPOSITORY}" \
               -H "X-AKDP-Run-At: $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               -H "X-AKDP-Run-Attempt: ${GITHUB_RUN_ATTEMPT}" \
-              --data-binary @work/llm-ledger.jsonl) && exit 0
+              --data-binary @work/llm-ledger.jsonl) && [[ "$code" == 2?? ]] && exit 0
             echo "Ledger upload attempt $i failed (HTTP $code); retrying..."
             sleep $((i * 5))
           done

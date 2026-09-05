@@ -43,6 +43,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from .summary_gate import (
     CHAPTER,
@@ -78,7 +79,7 @@ def _load_extra_body() -> dict:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        print(f"[summarize] WARNING: LLM_EXTRA_BODY is not valid JSON; ignoring: {raw[:100]}")
+        print("[summarize] WARNING: LLM_EXTRA_BODY is not valid JSON; ignoring")
         return {}
     if not isinstance(parsed, dict):
         print("[summarize] WARNING: LLM_EXTRA_BODY must be a JSON object; ignoring")
@@ -287,21 +288,30 @@ def _chat_once(messages: list[dict], max_tokens: int) -> _CallResult:
         with urllib.request.urlopen(req, timeout=180) as resp:
             payload = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
-        try:
-            detail = exc.read().decode(errors="replace")
-        except Exception:  # noqa: BLE001 — best-effort error detail
-            detail = ""
-        raise _TransportError(f"HTTP {exc.code}: {detail[:200]}", status=exc.code) from exc
+        exc.close()
+        raise _TransportError(f"HTTP {exc.code}", status=exc.code) from None
+    except (ValueError, UnicodeError):
+        raise _TransportError("invalid JSON response", status=200) from None
     except Exception as exc:  # noqa: BLE001 — timeouts, DNS, bad payload framing
-        raise _TransportError(str(exc), status=None) from exc
+        raise _TransportError(type(exc).__name__, status=None) from None
     latency_ms = int((time.monotonic() - started) * 1000)
 
-    choices = payload.get("choices") or []
-    choice = choices[0] if choices else {}
-    message = choice.get("message") or {}
+    if not isinstance(payload, dict):
+        raise _TransportError("invalid response shape", status=200)
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise _TransportError("invalid response choices", status=200)
+    choice = choices[0]
+    message = choice.get("message")
     usage = payload.get("usage") or {}
+    if (not isinstance(message, dict) or not isinstance(usage, dict)
+            or (message.get("content") is not None and not isinstance(message["content"], str))
+            or (choice.get("finish_reason") is not None and not isinstance(choice["finish_reason"], str))
+            or any(payload.get(key) is not None and not isinstance(payload[key], str)
+                   for key in ("model", "id"))):
+        raise _TransportError("invalid response fields", status=200)
     return _CallResult(
-        content=str(message.get("content") or "").strip(),
+        content=(message.get("content") or "").strip(),
         finish_reason=choice.get("finish_reason"),
         model=payload.get("model"),
         response_id=payload.get("id"),
@@ -324,6 +334,7 @@ class _Ledger:
     def __init__(self, path: Path, run_meta: dict | None):
         self.path = path
         self.run_meta = dict(run_meta or {})
+        self.run_meta.setdefault("pipeline_run_id", uuid.uuid4().hex)
         self._lock = threading.Lock()
 
     def write(self, **record: object) -> None:
@@ -355,6 +366,10 @@ def _generate(
     regen_attempts = 0
     attempt = 0
     retry_reason: str | None = None
+    endpoint_parts = urlsplit(LLM_BASE_URL)
+    endpoint = urlunsplit((endpoint_parts.scheme,
+                          endpoint_parts.netloc.rsplit("@", 1)[-1],
+                          endpoint_parts.path, "", ""))
 
     while True:
         attempt += 1
@@ -362,6 +377,9 @@ def _generate(
             "ts": _utcnow(),
             "run_id": run.get("run_id"),
             "job_id": run.get("job_id"),
+            "pipeline_run_id": run.get("pipeline_run_id"),
+            "run_attempt": run.get("run_attempt"),
+            "publication_revision": run.get("publication_revision", 1),
             "version_id": run.get("version_id"),
             "level": level,
             "event_id": call_meta.get("event_id"),
@@ -369,8 +387,8 @@ def _generate(
             "input_sha256": input_hash,
             "input_chars": len(input_text),
             "requested_model": LLM_MODEL,
-            "endpoint": LLM_BASE_URL,
-            "endpoint_fingerprint": _fingerprint(LLM_BASE_URL),
+            "endpoint": endpoint,
+            "endpoint_fingerprint": _fingerprint(endpoint),
             "provider": "openai-chat-completions",
             "logical_call_id": logical_id,
             "attempt": attempt,
@@ -380,7 +398,9 @@ def _generate(
             "max_tokens": max_tokens,
             "temperature": 0.3,
             "extra_body_keys": sorted(LLM_EXTRA_BODY),
+            "extra_body_fingerprint": _fingerprint(json.dumps(LLM_EXTRA_BODY, sort_keys=True)),
         }
+        started = time.monotonic()
         try:
             result = _chat_once(messages, max_tokens)
         except _TransportError as exc:
@@ -388,7 +408,9 @@ def _generate(
             ledger.write(
                 **common,
                 http_status=exc.status,
-                latency_ms=None,
+                latency_ms=int((time.monotonic() - started) * 1000),
+                ended_at=_utcnow(),
+                response_id=None,
                 finish_reason=None,
                 actual_model=None,
                 model_fingerprint=None,
@@ -406,11 +428,13 @@ def _generate(
                       f"({transport_attempts}/{MAX_TRANSPORT_RETRIES})...")
                 _sleep_jitter(transport_attempts)
                 continue
-            raise RuntimeError(f"LLM call failed after {attempt} attempts: {exc}") from exc
+            raise RuntimeError(f"LLM call failed after {attempt} attempts: {reason}") from None
 
         if classify_finish_reason(result.finish_reason) == "accept":
             ok, reason_tuple = accept_summary(level, result.content)
             reject_reason = None if ok else reason_tuple
+            if result.content == SENTINEL_NO_DIALOGUE:
+                ok, reject_reason = False, "unexpected_sentinel"
         else:
             ok = False
             reject_reason = f"finish_reason:{result.finish_reason}"
@@ -419,6 +443,8 @@ def _generate(
             **common,
             http_status=200,
             latency_ms=result.latency_ms,
+            ended_at=_utcnow(),
+            response_id=result.response_id,
             finish_reason=result.finish_reason,
             actual_model=result.model,
             model_fingerprint=model_fingerprint,
@@ -557,6 +583,7 @@ def run_summarize(candidate: Path, run_meta: dict | None = None) -> SummarizeSta
     meta = dict(run_meta or {})
     meta.setdefault("run_id", os.environ.get("GITHUB_RUN_ID"))
     meta.setdefault("job_id", os.environ.get("GITHUB_JOB"))
+    meta.setdefault("run_attempt", os.environ.get("GITHUB_RUN_ATTEMPT"))
     ledger = _Ledger(candidate.parent / "llm-ledger.jsonl", meta)
 
     chapters = _iter_chapters(zh)
