@@ -41,7 +41,7 @@ def _gh_download(repo: str, tag: str | None, asset: str, dest: Path) -> None:
 def _list_release_tags() -> list[str]:
     proc = subprocess.run(
         ["gh", "release", "list", "-R", DIST_REPO,
-         "--json", "tagName,isDraft", "--limit", "200"],
+         "--json", "tagName,isDraft,isPrerelease", "--limit", "200"],
         capture_output=True, text=True, check=False,
     )
     if proc.returncode != 0:
@@ -55,7 +55,8 @@ def _list_release_tags() -> list[str]:
         raise RuntimeError("factory release listing returned invalid JSON") from exc
     return [
         rel["tagName"] for rel in releases
-        if not rel.get("isDraft") and isinstance(rel.get("tagName"), str)
+        if not rel.get("isDraft") and not rel.get("isPrerelease")
+        and isinstance(rel.get("tagName"), str)
     ]
 
 
@@ -114,20 +115,25 @@ def _verify_asset_digest(path: Path, metadata: dict) -> None:
 
 def _verify_manifest(staging: Path, release: dict) -> None:
     manifest_path = staging / contract.MANIFEST_ASSET
+    tag = str(release.get("tagName", ""))
+    parsed = parse_release_tag(tag)
     if not manifest_path.exists():
+        if tag.startswith("datarev-"):
+            raise RuntimeError("repair baseline requires a manifest")
         return  # Transition compatibility for the first factory Release.
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if manifest["contractVersion"] != contract.CONTRACT_VERSION:
             raise ValueError(f"unsupported contractVersion {manifest['contractVersion']!r}")
-        tag = str(release.get("tagName", ""))
         source = manifest.get("source", {})
         if not isinstance(source, dict):
             raise TypeError("manifest source must be an object")
         source_version = source.get("versionId")
-        parsed = parse_release_tag(tag)
         if parsed is not None and source_version != parsed[0]:
             raise ValueError("manifest source version does not match release tag")
+        revision = manifest.get("publicationRevision", 1)
+        if parsed is not None and (type(revision) is not int or revision != parsed[1]):
+            raise ValueError("manifest publication revision does not match release tag")
         for name in (contract.EXCEL_ASSET, contract.LEVELS_ASSET, contract.STORY_ASSET):
             expected = manifest["assets"][name]
             _verify_asset_digest(staging / name, {
@@ -193,7 +199,7 @@ def download_baseline(baseline: Path, *, clobber: bool = False) -> None:
                 _verify_asset_digest(staging / asset, remote_assets[asset])
             if contract.MANIFEST_ASSET in remote_assets:
                 _gh_download(DIST_REPO, tag, contract.MANIFEST_ASSET, staging)
-                _verify_manifest(staging, factory)
+            _verify_manifest(staging, factory)
         else:
             raise RuntimeError(
                 "factory has no published Release; seed work/baseline from a "

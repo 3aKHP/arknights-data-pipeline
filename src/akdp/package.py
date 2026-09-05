@@ -121,6 +121,8 @@ def package_candidate(
     publicationRevision: 1 for normal releases, N >= 2 for datarev repair
     revisions of the same source versionId.
     """
+    if type(revision) is not int or revision < 1:
+        raise ValueError("publication revision must be a positive integer")
     zh = candidate / "zh_CN"
     dist.mkdir(parents=True, exist_ok=True)
 

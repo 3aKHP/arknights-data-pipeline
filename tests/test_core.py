@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import pytest
 from pathlib import Path
 
 from akdp import contract
@@ -124,6 +125,22 @@ def test_package_stamps_publication_revision_and_llm_digest(tmp_path):
     assert plain["llm"] == {}
 
 
+@pytest.mark.parametrize("revision", [0, -1, 1.5, True])
+def test_package_rejects_invalid_revision_before_writing(tmp_path, revision):
+    with pytest.raises(ValueError, match="positive integer"):
+        package_candidate(tmp_path / "candidate", tmp_path / "dist", revision=revision)
+    assert not (tmp_path / "dist").exists()
+
+
+@pytest.mark.parametrize("command", ["summarize", "package", "publish"])
+def test_cli_does_not_turn_revision_zero_into_normal_release(monkeypatch, command):
+    from akdp.cli import main
+    monkeypatch.setattr("sys.argv", ["akdp", command, "--revision", "0"])
+    with pytest.raises(SystemExit) as error:
+        main()
+    assert error.value.code == 2
+
+
 # --- summary acceptance release gate (gate 7) ---
 
 _GOOD_CHAPTER_SUMMARY = "话" * 60 + "。"
@@ -231,6 +248,27 @@ def test_validate_summary_gate_no_chapters_no_requirements(tmp_path):
     _mk_tree(cand, char_names=["阿米娅"])
     res = validate_candidate(cand)
     assert res.ok, res.errors
+
+
+@pytest.mark.parametrize("change", ["hash", "finish", "sentinel"])
+def test_validate_summary_gate_checks_sidecar(tmp_path, change):
+    cand = tmp_path / "cand"
+    key = "activities/act1/ch0"
+    _mk_summary_tree(cand, review_chapters=[key],
+                     summaries={key: _GOOD_CHAPTER_SUMMARY},
+                     event_summaries={"act1": _GOOD_EVENT_SUMMARY})
+    meta = {"path": "llm", "finish_reason": "stop",
+            "output_sha256": hashlib.sha256(_GOOD_CHAPTER_SUMMARY.encode()).hexdigest()}
+    if change == "hash":
+        meta["output_sha256"] = "0" * 64
+    elif change == "finish":
+        meta["finish_reason"] = "length"
+    else:
+        meta["path"] = "sentinel"
+    _write(cand / "zh_CN", "summaries.meta.json", {key: meta})
+    res = validate_candidate(cand)
+    assert not res.ok
+    assert any("sidecar" in error for error in res.errors)
 
 
 def test_package_is_byte_reproducible(tmp_path):

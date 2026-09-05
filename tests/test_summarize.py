@@ -9,6 +9,7 @@ content (including the no-raw-text privacy boundary).
 
 import hashlib
 import itertools
+import io
 import json
 from pathlib import Path
 
@@ -309,3 +310,76 @@ def test_extra_body_reserved_keys_are_dropped(monkeypatch, capsys):
     assert S._load_extra_body() == {"thinking": {"type": "disabled"}}
     out = capsys.readouterr().out
     assert "max_tokens" in out and "model" in out
+
+
+def test_provider_error_body_never_reaches_public_failures(tmp_path, monkeypatch, capsys):
+    _patch_env(monkeypatch)
+    cand = _make_candidate(tmp_path)
+    secret = "private-provider-error-and-prompt"
+
+    def fail(*args, **kwargs):
+        raise S.urllib.error.HTTPError(
+            "https://llm.test/v1", 400, "bad request", {}, io.BytesIO(secret.encode()))
+
+    monkeypatch.setattr(S.urllib.request, "urlopen", fail)
+    stats = S.run_summarize(cand)
+    assert stats.failed_details
+    assert secret not in json.dumps(stats.to_dict()) + capsys.readouterr().out
+
+
+def test_invalid_extra_body_warning_does_not_echo_secret(monkeypatch, capsys):
+    monkeypatch.setenv("LLM_EXTRA_BODY", '{"private":"do-not-log"')
+    S._load_extra_body()
+    assert "do-not-log" not in capsys.readouterr().out
+
+
+def test_non_string_content_is_rejected_and_ledgered(tmp_path, monkeypatch):
+    _patch_env(monkeypatch)
+    cand = _make_candidate(tmp_path)
+    payload = {"choices": [{"message": {"content": [GOOD_EVENT]}, "finish_reason": "stop"}]}
+    monkeypatch.setattr(S.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(json.dumps(payload).encode()))
+    stats = S.run_summarize(cand)
+    assert stats.chapters_failed == 1 and stats.events_failed == 1
+    assert len(_ledger_records(tmp_path)) == 2
+
+
+def test_ledger_records_response_and_run_identity(tmp_path, monkeypatch):
+    _patch_env(monkeypatch)
+    cand = _make_candidate(tmp_path)
+    fake, _ = _script([_resp(GOOD_CHAPTER), _resp(GOOD_EVENT)])
+    monkeypatch.setattr(S, "_chat_once", fake)
+    S.run_summarize(cand, run_meta={"publication_revision": 2, "pipeline_run_id": "repair-1"})
+    rec = _ledger_records(tmp_path)[0]
+    assert rec["response_id"] == "resp-1"
+    assert rec["publication_revision"] == 2
+    assert rec["pipeline_run_id"] == "repair-1"
+
+
+def test_model_cannot_claim_no_dialogue_sentinel(tmp_path, monkeypatch):
+    _patch_env(monkeypatch)
+    cand = _make_candidate(tmp_path)
+    fake, _ = _script(itertools.repeat(_resp(SENTINEL)))
+    monkeypatch.setattr(S, "_chat_once", fake)
+    stats = S.run_summarize(cand)
+    assert stats.chapters_failed == 1 and stats.events_failed == 1
+
+
+def test_endpoint_credentials_are_removed_from_ledger(tmp_path, monkeypatch):
+    _patch_env(monkeypatch)
+    monkeypatch.setattr(S, "LLM_BASE_URL", "https://user:private-password@llm.test/v1?key=private-query#private-fragment")
+    fake, _ = _script([_resp(GOOD_CHAPTER), _resp(GOOD_EVENT)])
+    monkeypatch.setattr(S, "_chat_once", fake)
+    S.run_summarize(_make_candidate(tmp_path))
+    ledger = (tmp_path / "llm-ledger.jsonl").read_text()
+    assert "private-" not in ledger
+    assert _ledger_records(tmp_path)[0]["endpoint"] == "https://llm.test/v1"
+
+
+@pytest.mark.parametrize("field", ["model", "id"])
+def test_invalid_response_metadata_is_ledgered(tmp_path, monkeypatch, field):
+    _patch_env(monkeypatch)
+    payload = {"choices": [{"message": {"content": GOOD_EVENT}, "finish_reason": "stop"}], field: ["invalid"]}
+    monkeypatch.setattr(S.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(json.dumps(payload).encode()))
+    stats = S.run_summarize(_make_candidate(tmp_path))
+    assert stats.chapters_failed == 1 and stats.events_failed == 1
+    assert len(_ledger_records(tmp_path)) == 2

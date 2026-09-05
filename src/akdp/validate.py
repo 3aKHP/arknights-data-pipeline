@@ -2,11 +2,36 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import contract
+
+
+def _summary_sidecar_errors(values: dict, metadata: dict) -> list[str]:
+    """Validate recorded provenance; legacy summaries may have no sidecar entry."""
+    from .summary_gate import SENTINEL_NO_DIALOGUE
+
+    errors = []
+    for key, info in metadata.items():
+        text = values.get(key)
+        if not isinstance(text, str) or not isinstance(info, dict):
+            errors.append(f"sidecar has no matching summary or invalid metadata: {key}")
+            continue
+        path = info.get("path")
+        if path == "sentinel":
+            if text != SENTINEL_NO_DIALOGUE:
+                errors.append(f"sidecar sentinel does not match summary: {key}")
+        elif path == "llm":
+            if info.get("finish_reason") != "stop" or text == SENTINEL_NO_DIALOGUE:
+                errors.append(f"sidecar has invalid LLM finish state: {key}")
+            if info.get("output_sha256") != hashlib.sha256(text.encode("utf-8")).hexdigest():
+                errors.append(f"sidecar output hash mismatch: {key}")
+        else:
+            errors.append(f"sidecar has invalid generation path: {key}")
+    return errors
 
 
 @dataclass
@@ -239,11 +264,22 @@ def validate_candidate(
                 p = zh / name
                 if not p.is_file():
                     return {}
-                loaded = json.loads(p.read_text(encoding="utf-8"))
-                return loaded if isinstance(loaded, dict) else {}
+                try:
+                    loaded = json.loads(p.read_text(encoding="utf-8"))
+                except (ValueError, OSError):
+                    res.errors.append(f"summary gate: invalid JSON: {name}")
+                    return {}
+                if not isinstance(loaded, dict):
+                    res.errors.append(f"summary gate: expected an object: {name}")
+                    return {}
+                return loaded
 
             chapter_summaries = _load_map("summaries.json")
             event_summaries = _load_map("event_summaries.json")
+            for filename, values in (("summaries.meta.json", chapter_summaries),
+                                     ("event_summaries.meta.json", event_summaries)):
+                res.errors.extend(f"summary gate: {filename}: {error}" for error in
+                                  _summary_sidecar_errors(values, _load_map(filename)))
             chapter_missing = chapter_rejected = 0
             event_missing = event_rejected = 0
 

@@ -118,12 +118,31 @@ def publish(
     one with retries. This isolates network failures on large uploads.
     """
     manifest = json.loads((dist / "manifest.json").read_text(encoding="utf-8"))
-    manifest_revision = int(manifest.get("publicationRevision", 1))
-    if manifest_revision != revision:
+    if type(revision) is not int or revision < 1:
+        raise ValueError("publication revision must be a positive integer")
+    manifest_revision = manifest.get("publicationRevision", 1)
+    if type(manifest_revision) is not int or manifest_revision != revision:
         raise ValueError(
             f"manifest publicationRevision {manifest_revision} does not match "
             f"requested revision {revision}"
         )
+
+    asset_paths = [dist / name for name in RELEASE_ASSETS]
+    missing = [p.name for p in asset_paths if not p.is_file()]
+    if missing:
+        raise FileNotFoundError(f"missing dist assets: {missing}")
+    if manifest.get("contractVersion") != contract.CONTRACT_VERSION:
+        raise ValueError("unsupported manifest contractVersion")
+    if manifest.get("source", {}).get("versionId") != source_id:
+        raise ValueError("manifest source version does not match requested release")
+    if manifest.get("validation", {}).get("errors") != []:
+        raise ValueError("manifest must contain a successful validation result")
+    for path in asset_paths:
+        if path.name == contract.MANIFEST_ASSET:
+            continue
+        expected = manifest.get("assets", {}).get(path.name, {})
+        if expected.get("size") != path.stat().st_size or expected.get("sha256") != _sha256(path):
+            raise ValueError(f"local asset does not match manifest: {path.name}")
 
     if revision >= 2:
         max_existing = max(_existing_revisions(source_id), default=1)
@@ -139,11 +158,6 @@ def publish(
         tag = f"{TAG_PREFIX}{source_id}"
         title = f"Game Data {title_suffix}"
         mark_latest = True
-
-    asset_paths = [dist / name for name in RELEASE_ASSETS]
-    missing = [p.name for p in asset_paths if not p.exists()]
-    if missing:
-        raise FileNotFoundError(f"missing dist assets: {missing}")
 
     if dry_run:
         print(f"[publish:dry-run] {DIST_REPO} tag={tag} (revision {revision})")
@@ -170,7 +184,9 @@ def publish(
             "--latest=false",
         ], "release create draft")
         state = _release_state(tag) or {"isDraft": True, "assets": []}
-    elif not state.get("isDraft", False) and _missing_or_invalid_assets(state, asset_paths):
+    if revision >= 2 and not state.get("isDraft", False):
+        raise ValueError(f"published repair release is immutable: {tag}")
+    if not state.get("isDraft", False) and _missing_or_invalid_assets(state, asset_paths):
         # GitHub cannot convert a public release back to draft. Upload the
         # manifest first (it is the smallest asset), then replace invalid
         # data assets; consumers that enforce the manifest fail closed while

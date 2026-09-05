@@ -157,7 +157,10 @@ def cmd_summarize(args: argparse.Namespace) -> int:
     merge_info = json.loads(merge_path.read_text(encoding="utf-8")) if merge_path.exists() else {}
     stats = summarize_mod.run_summarize(
         args.workdir / "candidate",
-        run_meta={"version_id": (merge_info.get("source") or {}).get("versionId")},
+        run_meta={
+            "version_id": (merge_info.get("source") or {}).get("versionId"),
+            "publication_revision": getattr(args, "revision", 1),
+        },
     )
     (args.workdir / "summarize.json").write_text(
         json.dumps(stats.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -203,7 +206,7 @@ def cmd_package(args: argparse.Namespace) -> int:
         summarize_stats=summarize_stats,
         tool_versions=_tool_versions(),
         normalization=policy_manifest(),
-        revision=getattr(args, "revision", 1) or 1,
+        revision=getattr(args, "revision", 1),
         llm_ledger=workdir / "llm-ledger.jsonl",
     )
     for name, meta in manifest["assets"].items():
@@ -219,7 +222,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
     publish_mod.publish(
         workdir / "dist", source_id=source_id,
         title_suffix=source_id, dry_run=not args.execute,
-        revision=getattr(args, "revision", 1) or 1,
+        revision=getattr(args, "revision", 1),
     )
     return 0
 
@@ -571,6 +574,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
 
 
+def _publication_revision(value: str) -> int:
+    revision = int(value)
+    if revision < 1:
+        raise argparse.ArgumentTypeError("publication revision must be a positive integer")
+    return revision
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="akdp", description=__doc__)
     ap.add_argument("--workdir", type=Path, default=Path("work"))
@@ -593,13 +603,15 @@ def main() -> int:
     p.set_defaults(func=cmd_story)
 
     p = sub.add_parser("summarize", help="generate incremental LLM story/event summaries")
+    p.add_argument("--revision", type=_publication_revision, default=1,
+                   help="candidate publicationRevision recorded in the private ledger")
     p.set_defaults(func=cmd_summarize)
 
     p = sub.add_parser("merge", help="normalize + merge into candidate tree")
     p.set_defaults(func=cmd_merge)
 
     p = sub.add_parser("package", help="build distribution zips + manifest")
-    p.add_argument("--revision", type=int, default=1,
+    p.add_argument("--revision", type=_publication_revision, default=1,
                    help="publicationRevision stamped into the manifest "
                         "(>=2 for datarev repair revisions)")
     p.set_defaults(func=cmd_package)
@@ -612,7 +624,7 @@ def main() -> int:
 
     p = sub.add_parser("publish", help="publish releases (dry-run by default)")
     p.add_argument("--execute", action="store_true", help="actually create GitHub releases")
-    p.add_argument("--revision", type=int, default=1,
+    p.add_argument("--revision", type=_publication_revision, default=1,
                    help="1 publishes data-<versionId>; >=2 publishes an immutable "
                         "datarev-<versionId>-r<N> repair revision (never --latest)")
     p.set_defaults(func=cmd_publish)
