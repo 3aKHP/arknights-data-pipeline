@@ -144,4 +144,9 @@ work/
 - [MooncellWiki/OpenArknightsFBS](https://github.com/MooncellWiki/OpenArknightsFBS) — FlatBuffers schema
 - [050644zf/ASTR-Script](https://github.com/050644zf/ASTR-Script) — 剧情文本 → JSON 转换
 
-游戏数据版权归属 上海鹰角网络科技有限公司，仅供学习交流使用。
+## 许可与版权声明
+
+- **代码**：MIT License（见 [LICENSE](LICENSE)）；`vendor/` 下组件与上述致谢项目保留其原有许可证。
+- **数据**：本仓库 Release 分发的游戏数据版权归上海鹰角网络科技有限公司（Hypergryph）及/或其关联方所有，未获得开源授权，仅供非商业的同人创作与学习交流。本仓库与鹰角网络无任何关联、未获授权或赞助。
+
+完整声明（含权利人撤下渠道）见 [NOTICE](NOTICE)。
