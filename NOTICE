@@ -2,30 +2,20 @@ Arknights Data Pipeline — IP Notices / 知识产权声明
 
 1. Code / 代码
 
-   The pipeline code in this repository is licensed under the MIT License
-   (see LICENSE). Components under vendor/ and the third-party projects
-   credited in the README ("致谢") retain their original licenses.
+The pipeline code in this repository is licensed under the MIT License (see LICENSE).
+Components under vendor/ and the third-party projects credited in the README ("致谢") retain their original licenses.
 
-   本仓库的流水线代码以 MIT 许可证授权（见 LICENSE）。vendor/ 下的组件
-   以及 README「致谢」中列出的第三方项目保留其原有许可证。
+本仓库的流水线代码以 MIT 许可证授权（见 LICENSE）。vendor/ 下的组件以及 README「致谢」中列出的第三方项目保留其原有许可证。
 
 2. Game data / 游戏数据
 
-   Releases published by this repository are the distribution point of
-   unpacked Arknights game data (data tables, level data, story text,
-   operator artwork, and derived summaries). Copyright © 上海鹰角网络科技
-   有限公司 (Hypergryph) and/or its affiliates. No open license is granted
-   for the data; it is provided for non-commercial fan creation, study and
-   exchange only.
+Releases published by this repository are the distribution point of unpacked Arknights game data (data tables, level data, story text, operator artwork, and derived summaries).
+Copyright © 上海鹰角网络科技有限公司 (Hypergryph) and/or its affiliates.
+No open license is granted for the data; it is provided for non-commercial fan creation, study and exchange only.
 
-   This repository is not affiliated with, endorsed by, or sponsored by
-   Hypergryph. Rights holders may request removal via
-   https://github.com/3aKHP/arknights-data-pipeline/issues and it will be
-   honored promptly.
+This repository is not affiliated with, endorsed by, or sponsored by Hypergryph.
+Rights holders may request removal via https://github.com/3aKHP/arknights-data-pipeline/issues and it will be honored promptly.
 
-   本仓库 Release 分发的明日方舟解包数据（数值表、关卡数据、剧情文本、
-   立绘及衍生摘要等）版权归上海鹰角网络科技有限公司（Hypergryph）及/或
-   其关联方所有，未获得任何开源授权，仅供非商业的同人创作与学习交流。
-   本仓库与鹰角网络无任何关联、未获其授权或赞助。权利人可通过
-   https://github.com/3aKHP/arknights-data-pipeline/issues 提出删除要求，
-   将立即处理。
+本仓库 Release 分发的明日方舟解包数据（数值表、关卡数据、剧情文本、立绘及衍生摘要等）版权归上海鹰角网络科技有限公司（Hypergryph）及/或其关联方所有，未获得任何开源授权，仅供非商业的同人创作与学习交流。
+本仓库与鹰角网络无任何关联、未获其授权或赞助。
+权利人可通过 https://github.com/3aKHP/arknights-data-pipeline/issues 提出删除要求，将立即处理。
