@@ -29,11 +29,11 @@ jobs:
       LEDGER_ENDPOINT_URL: ${{ secrets.LEDGER_ENDPOINT_URL }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: true
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
