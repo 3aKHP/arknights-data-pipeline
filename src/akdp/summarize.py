@@ -199,6 +199,10 @@ def extract_chapter_text(raw: dict) -> str:
                 lines.append(f"*{_clean(str(content))}*")
         elif prop == "decision":
             options = attrs.get("options") or []
+            if isinstance(options, str):
+                # ASTR keeps the script's options="A;B" attribute as the raw
+                # semicolon-joined string; split it back into choices.
+                options = [s.strip() for s in options.split(";") if s.strip()]
             for opt in options:
                 text = opt if isinstance(opt, str) else (opt.get("text") or "" if isinstance(opt, dict) else "")
                 if text:

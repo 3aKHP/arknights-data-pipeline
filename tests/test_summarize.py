@@ -3,8 +3,9 @@
 All LLM traffic is mocked at the single-HTTP-call boundary (_chat_once);
 backoff sleeps are disabled. These tests cover: acceptance-gate retries,
 fail-closed budgets, transport error classification, the single-chapter
-event LLM path, sentinel handling, sidecar writing/pruning, and ledger
-content (including the no-raw-text privacy boundary).
+event LLM path, sentinel handling, sidecar writing/pruning, ledger
+content (including the no-raw-text privacy boundary), and Decision
+options shapes in extract_chapter_text.
 """
 
 import hashlib
@@ -383,3 +384,37 @@ def test_invalid_response_metadata_is_ledgered(tmp_path, monkeypatch, field):
     stats = S.run_summarize(_make_candidate(tmp_path))
     assert stats.chapters_failed == 1 and stats.events_failed == 1
     assert len(_ledger_records(tmp_path)) == 2
+
+
+# ---------------------------------------------------------------------------
+# extract_chapter_text: Decision options shapes
+# ---------------------------------------------------------------------------
+
+
+def _decision_story(attrs):
+    return {"storyList": [{"prop": "Decision", "attributes": attrs}]}
+
+
+def test_decision_string_options_split_on_semicolons():
+    # ASTR emits the script's options="A;B" attribute as one raw string
+    raw = _decision_story({"options": "选项甲;选项乙", "values": "1;2"})
+    text = S.extract_chapter_text(raw)
+    assert text.splitlines() == ["【选项】选项甲", "【选项】选项乙"]
+
+
+def test_decision_string_options_single_and_whitespace_segments():
+    raw = _decision_story({"options": "唯一选项"})
+    assert S.extract_chapter_text(raw).splitlines() == ["【选项】唯一选项"]
+    raw = _decision_story({"options": " 选项甲 ;选项乙 "})
+    assert S.extract_chapter_text(raw).splitlines() == ["【选项】选项甲", "【选项】选项乙"]
+
+
+def test_decision_empty_or_missing_options_emit_nothing():
+    assert "【选项】" not in S.extract_chapter_text(_decision_story({"options": ""}))
+    assert "【选项】" not in S.extract_chapter_text(_decision_story({}))
+
+
+def test_decision_list_and_dict_options_forms():
+    raw = _decision_story({"options": ["选项甲", {"text": "选项乙"}, {"other": 1}, 42]})
+    text = S.extract_chapter_text(raw)
+    assert text.splitlines() == ["【选项】选项甲", "【选项】选项乙"]
