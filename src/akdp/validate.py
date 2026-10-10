@@ -74,6 +74,7 @@ def validate_candidate(
     probes: dict | None = None,
     *,
     max_record_drop_ratio: float = 0.05,
+    expected_source_version: str | None = None,
 ) -> ValidationResult:
     """Run all gates against a candidate release tree (rooted at the dir containing zh_CN/)."""
     res = ValidationResult()
@@ -244,6 +245,80 @@ def validate_candidate(
                 f"{len(source_missing)} story entries lack source .txt in the tree, "
                 f"e.g. {sorted(source_missing)[:3]}"
             )
+
+    # --- gate 6b: story supplement catalog structure
+    # The catalog is a derived artifact; these checks pin its invariants.
+    # Chapter-level conversion coverage comes from gate 6 via
+    # iter_story_refs (which includes supplement refs).
+    from .story_supplement import ENTRY_TYPE, SUPPLEMENT_FILENAME, SUPPLEMENT_VERSION
+
+    supp_path = zh / SUPPLEMENT_FILENAME
+    topic_path = zh / "gamedata/excel/roguelike_topic_table.json"
+    if not supp_path.is_file():
+        if topic_path.is_file():
+            res.errors.append(
+                f"story supplement: {SUPPLEMENT_FILENAME} missing while "
+                "roguelike_topic_table is present (story stage not run?)"
+            )
+    else:
+        try:
+            supp = json.loads(supp_path.read_text(encoding="utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            res.errors.append(f"story supplement: invalid JSON: {e}")
+            supp = None
+        if isinstance(supp, dict):
+            if supp.get("version") != SUPPLEMENT_VERSION:
+                res.errors.append(
+                    f"story supplement: unsupported version {supp.get('version')!r}"
+                )
+            if expected_source_version is not None:
+                actual = ((supp.get("generated_from") or {}).get("source_version"))
+                if actual != expected_source_version:
+                    res.errors.append(
+                        f"story supplement: generated from {actual!r}, "
+                        f"current source is {expected_source_version!r} "
+                        "(stale merge-inherited catalog?)"
+                    )
+            events = supp.get("events")
+            if not isinstance(events, list):
+                res.errors.append("story supplement: events must be a list")
+                events = []
+            review_path = zh / "gamedata/excel/story_review_table.json"
+            review_ids = set()
+            if review_path.is_file():
+                try:
+                    review_ids = set(json.loads(review_path.read_text(encoding="utf-8")))
+                except (ValueError, UnicodeDecodeError):
+                    pass  # gate 1/2 already report unparseable review table
+            seen_event_ids = set()
+            for event in events:
+                eid = event.get("event_id")
+                if not eid:
+                    res.errors.append("story supplement: event missing event_id")
+                    continue
+                if eid in review_ids:
+                    res.errors.append(
+                        f"story supplement: event_id {eid} collides with review table"
+                    )
+                if eid in seen_event_ids:
+                    res.errors.append(f"story supplement: duplicate event_id {eid}")
+                seen_event_ids.add(eid)
+                if event.get("entry_type") != ENTRY_TYPE:
+                    res.errors.append(
+                        f"story supplement: {eid} entry_type "
+                        f"{event.get('entry_type')!r} != {ENTRY_TYPE!r}"
+                    )
+                chapters = event.get("chapters") or []
+                sorts = [c.get("sort") for c in chapters]
+                keys = [c.get("key") for c in chapters]
+                if len(set(sorts)) != len(sorts):
+                    res.errors.append(f"story supplement: {eid} has duplicate sorts")
+                if len(set(keys)) != len(keys):
+                    res.errors.append(f"story supplement: {eid} has duplicate keys")
+            res.metrics["story_supplement"] = {
+                "events": len(events),
+                "chapters": sum(len(e.get("chapters") or []) for e in events),
+            }
 
     # --- gate 7: summary acceptance (standing release gate)
     # Full-inventory scan with zero LLM cost: every chapter/event discovered

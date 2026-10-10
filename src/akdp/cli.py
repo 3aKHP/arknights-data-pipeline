@@ -184,10 +184,13 @@ def cmd_summarize(args: argparse.Namespace) -> int:
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
+    merge_path = args.workdir / "merge.json"
+    merge_info = json.loads(merge_path.read_text(encoding="utf-8")) if merge_path.exists() else {}
     result = validate_mod.validate_candidate(
         args.workdir / "candidate",
         baseline=args.workdir / "baseline",
         probes=_load_probes(args.workdir, args),
+        expected_source_version=(merge_info.get("source") or {}).get("versionId"),
     )
     (args.workdir / "validation.json").write_text(
         json.dumps(
