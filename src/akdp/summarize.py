@@ -605,6 +605,13 @@ def run_summarize(candidate: Path, run_meta: dict | None = None) -> SummarizeSta
 
     # --- Phase 1: chapter summaries (incremental) ---
     current_keys = {ch["story_key"] for ch in chapters}
+    # The prune below would otherwise delete summaries for supplement-catalog
+    # chapters (roguelike content is not in _iter_chapters' review-table
+    # enumeration). We do not generate supplement summaries today, but any
+    # that exist (e.g. hand-seeded) must survive the run.
+    from .story_supplement import iter_supplement_refs
+
+    current_keys |= set(iter_supplement_refs(zh))
     chapter_summaries = {k: v for k, v in chapter_summaries.items() if k in current_keys}
     pending = [ch for ch in chapters if ch["story_key"] not in chapter_summaries]
     stats.chapters_reused = len(chapters) - len(pending)

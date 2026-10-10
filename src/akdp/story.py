@@ -39,8 +39,9 @@ class StoryStats:
 def iter_story_refs(zh: Path):
     """Yield every referenced story text path (without extension) in the tree.
 
-    Covers story_review_table infoUnlockDatas and story_review_meta_table
-    extra avgs (contentPath).
+    Covers story_review_table infoUnlockDatas, story_review_meta_table
+    extra avgs (contentPath), and the roguelike supplement catalog refs
+    (table-derived; does not require story_supplement.json to exist).
     """
     srt_path = zh / "gamedata/excel/story_review_table.json"
     if srt_path.exists():
@@ -58,6 +59,9 @@ def iter_story_refs(zh: Path):
         for avg in avgs.values():
             if isinstance(avg, dict) and avg.get("contentPath"):
                 yield avg["contentPath"]
+    from .story_supplement import iter_supplement_refs
+
+    yield from iter_supplement_refs(zh)
 
 
 def _fix_case_mismatches(zh: Path) -> list[dict]:

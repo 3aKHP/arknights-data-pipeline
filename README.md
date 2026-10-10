@@ -23,7 +23,7 @@ check      变更检测：HG CDN versionId vs 工厂仓库最新 Release tag，�
 fetch      HG CDN → arkprts 解包（带重试/完整性校验）
 normalize  cn/ → zh_CN/ 布局映射、排除清单
 merge      基线 Release 树 ⊕ 新解包树 → 候选树（新文件覆盖，基线文件保留）
-story      剧情 txt → JSON（vendor/ASTR-Script，含大小写错位修复与索引重建）
+story      剧情 txt → JSON（vendor/ASTR-Script，含大小写错位修复与索引重建）；并生成肉鸽补充目录 story_supplement.json
 summarize  增量 LLM 双级别摘要（summaries.json + event_summaries.json）
 validate   校验门：契约文件、探针、记录数回归、UTF-8、累积不变量、剧情转换完整性
 package    三个 zip + manifest.json
@@ -35,7 +35,7 @@ publish    data-* 单 Release 四 asset，发到工厂仓库自身（gh CLI）
 每个游戏版本一个 Release（`data-<versionId>`），保持 draft 直到校验完成，带四个 asset：
 - `zh_CN-excel.zip` — 数值表
 - `zh_CN-levels.zip` — 关卡数据
-- `zh_CN.zip` — excel + 剧情 JSON + ASTR 索引 + LLM 摘要
+- `zh_CN.zip` — excel + 剧情 JSON + ASTR 索引 + LLM 摘要 + 肉鸽补充目录
 - `manifest.json` — 契约版本、源版本、校验指标和三个包的大小/SHA-256
 
 Release notes 同步内嵌 manifest，方便人工审计。manifest 还记录流水线 commit、
