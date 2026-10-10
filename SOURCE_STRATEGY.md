@@ -27,7 +27,11 @@ SHA-256，以及版本化归一化/排除政策。
 需要使用应急快照或替代提取工具时，切换必须人工发起：固定输入快照和工具版本，经过同一
 normalize/merge/validate/package 流程，用 `--force` 演练，保持 Release 为 draft，核对
 manifest 和三个资产，完成 Python、TypeScript 与真实 MCP `tools/call` 验收后才允许发布。
-回滚通过恢复旧 Release 为 latest 或保持消费者上一代激活目录完成，不依赖服务重启。
+回滚与修复不复用旧身份，也不依赖移动 Latest 指针：现代消费者按 `(versionId, revision)`
+字典序选用最高身份的数据，把旧 Release 重新标为 latest 不构成数据回滚。恢复通过向前
+发布完成——以最高已发布身份为基线发布 `datarev-<versionId>-r<N>` 修订（N 从 2 起递增，
+不标 Latest，已公开修订不可覆盖），或由下一次普通 `data-` 发布经基线继承带入修复；
+新数据验收前消费者继续保持上一代激活目录，不依赖服务重启。
 
 ## 可控验收与运维观察
 
