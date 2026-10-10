@@ -61,6 +61,9 @@ STORY_INDEX_FILES = [
     "event_summaries.json",
     "summaries.meta.json",
     "event_summaries.meta.json",
+    # roguelike supplement catalog (derived from roguelike_topic_table);
+    # additive within prts-mcp-data/v1: old clients ignore unknown files
+    "story_supplement.json",
 ]
 
 #: key tables whose top-level record counts are tracked for regression checks

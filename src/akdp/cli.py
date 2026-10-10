@@ -39,6 +39,7 @@ from . import merge as merge_mod
 from . import package as package_mod
 from . import publish as publish_mod
 from . import story as story_mod
+from . import story_supplement as story_supplement_mod
 from . import summarize as summarize_mod
 from . import validate as validate_mod
 from .images_state import (
@@ -141,7 +142,21 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 
 def cmd_story(args: argparse.Namespace) -> int:
-    stats = story_mod.convert_stories(args.workdir / "candidate", args.astr_path)
+    candidate = args.workdir / "candidate"
+    zh = candidate / "zh_CN"
+    # Regenerate the roguelike supplement catalog on every run (cheap, pure
+    # table-driven) so merge-inherited stale copies cannot survive.
+    merge_path = args.workdir / "merge.json"
+    merge_info = json.loads(merge_path.read_text(encoding="utf-8")) if merge_path.exists() else {}
+    source_version = (merge_info.get("source") or {}).get("versionId")
+    supplement = story_supplement_mod.build_supplement(zh, source_version=source_version)
+    (zh / story_supplement_mod.SUPPLEMENT_FILENAME).write_text(
+        json.dumps(supplement, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
+    )
+    print(f"story supplement: {len(supplement['events'])} events, "
+          f"{sum(len(e['chapters']) for e in supplement['events'])} chapters, "
+          f"skipped missing source {len(supplement['skipped_missing_source'])}")
+    stats = story_mod.convert_stories(candidate, args.astr_path)
     (args.workdir / "story.json").write_text(
         json.dumps(stats.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
