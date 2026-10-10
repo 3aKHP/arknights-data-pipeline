@@ -96,3 +96,122 @@ def test_version_changed_is_scheduler_independent():
     assert not version_changed("same", "same")
     assert version_changed("new", "same")
     assert version_changed("same", "same", force=True)
+
+
+def _mk_rogue_tree(root: Path) -> None:
+    """Tree with a roguelike topic table, one Dialog month chat, one ending."""
+    zh = root / "zh_CN"
+    (zh / "gamedata/excel").mkdir(parents=True, exist_ok=True)
+    (zh / "gamedata/excel/story_review_table.json").write_text("{}", encoding="utf-8")
+    (zh / "gamedata/excel/story_review_meta_table.json").write_text(json.dumps({
+        "actArchiveResData": {"avgs": {
+            "avg_rogue_1_1": {
+                "id": "avg_rogue_1_1", "desc": "开幕", "breifPath": None,
+                "contentPath": "Obt/Roguelike/RO1/level_rogue1_entry",
+                "rawBrief": "猩红孤钻开幕梗概",
+            },
+        }},
+    }, ensure_ascii=False))
+    (zh / "gamedata/excel/character_table.json").write_text(json.dumps({
+        "char_405_absin": {"name": "苦艾"},
+    }, ensure_ascii=False))
+    (zh / "gamedata/excel/roguelike_topic_table.json").write_text(json.dumps({
+        "topics": {"rogue_1": {"id": "rogue_1", "name": "傀影与猩红孤钻", "sort": 1}},
+        "details": {"rogue_1": {
+            "endings": {"ro_ending_1": {"name": "舞会终场"}},
+            "archiveComp": {"endbook": {"endbook": {}}, "chat": {"chat": {
+                "month_chat_rogue_1_1": {
+                    "sortId": 1,
+                    "chatItemList": [
+                        {"floor": 1, "chatDesc": None,
+                         "chatStoryId": "Obt/Rogue/month_chat_rogue_1_1/month_chat_rogue_1_1_1"},
+                    ],
+                },
+            }}},
+            "monthSquad": {"m1": {"chatId": "month_chat_rogue_1_1", "teamName": "卡兹戴尔联谊会"}},
+        }},
+    }, ensure_ascii=False))
+    story = zh / "gamedata/story"
+    (story / "obt/roguelike/ro1").mkdir(parents=True, exist_ok=True)
+    (story / "obt/roguelike/ro1/level_rogue1_entry.txt").write_text(
+        "[name=\"？？？\"]开幕词。\n", encoding="utf-8")
+    (story / "obt/roguelike/ro1/level_rogue1_ending_1.txt").write_text(
+        "[name=\"剧作家\"]落幕词。\n", encoding="utf-8")
+    # official brief companion for the ending
+    (story / "[uc]info/obt/roguelike/ro1").mkdir(parents=True, exist_ok=True)
+    (story / "[uc]info/obt/roguelike/ro1/level_rogue1_ending_1.txt").write_text(
+        "官方梗概：舞会终场。", encoding="utf-8")
+    # Dialog-inline month chat
+    mc = story / "obt/rogue/month_chat_rogue_1_1"
+    mc.mkdir(parents=True, exist_ok=True)
+    (mc / "month_chat_rogue_1_1_1.txt").write_text(
+        "[Title] MC\n"
+        "[Dialog(head=\"char_405_absin\", delay=1)]啊，赫拉格将军。\n"
+        "[Dialog]\n"
+        "[Dialog(head=\"npc_unknown\")]匿名台词。\n",
+        encoding="utf-8")
+
+
+def test_convert_stories_supplement_catalog(tmp_path):
+    _mk_rogue_tree(tmp_path)
+    stats = convert_stories(tmp_path, ASTR)
+    assert stats.failed == []
+
+    zh = tmp_path / "zh_CN"
+    entry = json.loads((zh / "gamedata/story/Obt/Roguelike/RO1/level_rogue1_entry.json")
+                       .read_text(encoding="utf-8"))
+    assert entry["eventid"] == "rogue_1"
+    assert entry["eventName"] == "傀影与猩红孤钻"
+    assert entry["entryType"] == "ROGUELIKE"
+    assert entry["storyCode"] == "RO1-OP"
+    assert entry["storyName"] == "开幕"
+    assert entry["storyInfo"] == "猩红孤钻开幕梗概"  # meta rawBrief fallback
+
+    ending = json.loads(
+        (zh / "gamedata/story/Obt/Roguelike/RO1/level_rogue1_ending_1.json")
+        .read_text(encoding="utf-8"))
+    assert ending["storyName"] == "舞会终场"  # topic ending name, not meta desc
+    assert ending["avgTag"] == "结局"
+    assert ending["storyInfo"] == "官方梗概：舞会终场。"  # [uc]info companion
+
+    month = json.loads(
+        (zh / "gamedata/story/Obt/Rogue/month_chat_rogue_1_1/month_chat_rogue_1_1_1.json")
+        .read_text(encoding="utf-8"))
+    assert month["storyName"] == "卡兹戴尔联谊会·1"
+    names = [l for l in month["storyList"] if l.get("prop") == "name"]
+    texts = [(l["attributes"].get("name"), l["attributes"].get("content")) for l in names]
+    assert ("苦艾", "啊，赫拉格将军。") in texts  # Dialog head resolved
+    assert ("？？？", "匿名台词。") in texts      # unknown head anonymized
+    assert month["storyInfo"] == ""  # Dialog files have no brief
+
+    storyinfo = json.loads((zh / "storyinfo.json").read_text(encoding="utf-8"))
+    assert storyinfo["Obt/Roguelike/RO1/level_rogue1_ending_1"] == "官方梗概：舞会终场。"
+
+
+def test_convert_stories_supplement_rebuilds_drifted_metadata(tmp_path):
+    _mk_rogue_tree(tmp_path)
+    zh = tmp_path / "zh_CN"
+    # pre-seed a JSON with stale extra-avg metadata (the pre-catalog shape)
+    jpath = zh / "gamedata/story/Obt/Roguelike/RO1/level_rogue1_ending_1.json"
+    jpath.parent.mkdir(parents=True, exist_ok=True)
+    jpath.write_text(json.dumps({
+        "lang": "zh_CN", "eventid": "", "eventName": "", "entryType": "EXTRA",
+        "storyCode": "", "avgTag": "", "storyName": "落幕",
+        "storyInfo": "官方梗概：舞会终场。", "storyList": [],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    stats = convert_stories(tmp_path, ASTR)
+    data = json.loads(jpath.read_text(encoding="utf-8"))
+    assert data["eventName"] == "傀影与猩红孤钻"
+    assert data["storyName"] == "舞会终场"
+    assert data["entryType"] == "ROGUELIKE"
+    assert any(l.get("prop") == "name" for l in data["storyList"])  # re-converted
+    assert "Obt/Roguelike/RO1/level_rogue1_ending_1" in stats.converted
+
+
+def test_convert_stories_supplement_idempotent(tmp_path):
+    _mk_rogue_tree(tmp_path)
+    convert_stories(tmp_path, ASTR)
+    stats = convert_stories(tmp_path, ASTR)
+    assert stats.converted == []
+    assert stats.failed == []

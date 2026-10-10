@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -126,6 +127,78 @@ def _regen_chardict(zh: Path) -> None:
     )
 
 
+def _meta_raw_briefs(zh: Path) -> dict[str, str]:
+    """contentPath -> rawBrief from story_review_meta_table avgs (RO1 five)."""
+    meta = _load_json(zh / "gamedata/excel/story_review_meta_table.json", {})
+    avgs = (meta.get("actArchiveResData") or {}).get("avgs") or {}
+    return {
+        v["contentPath"]: v["rawBrief"]
+        for v in avgs.values()
+        if isinstance(v, dict) and v.get("contentPath") and v.get("rawBrief")
+    }
+
+
+def _make_supplement_story(func, link_root: Path, event: dict, ch: dict,
+                           zh: Path, briefs: dict, resolve, shadow_root: Path):
+    """Duck-typed ExtraStory carrying catalog metadata into the JSON output."""
+    s = func.ExtraStory.__new__(func.ExtraStory)
+    s.root_dir = link_root / "cn"
+    s.lang = "cn"
+    s.eventid = event["event_id"]
+    s.eventName = event["name"]
+    s.entryType = event["entry_type"]
+    s.storyCode = ch["code"]
+    s.avgTag = ch["avg_tag"]
+    s.storyName = ch["name"]
+    s.storyData = {}
+    # official brief: a [uc]info companion file wins; otherwise fall back
+    # to the meta table's rawBrief (the RO1 five carry those).
+    info = zh / STORY_DIR / f"[uc]info/{ch['key'].lower()}.txt"
+    s.storyInfo = info if info.is_file() else None
+    if not s.storyInfo and briefs.get(ch["key"]):
+        s.rawStoryInfo = briefs[ch["key"]]
+    txt = s.root_dir / "gamedata" / "story" / f"{ch['key']}.txt"
+    try:
+        raw = txt.read_text(encoding="utf-8")
+    except OSError:
+        raw = None  # convert_one reports the missing source
+    if raw is not None:
+        from .story_normalize import normalize_dialog_text
+
+        normalized = normalize_dialog_text(raw, resolve)
+        if normalized != raw:
+            # keep the vendored converter untouched: feed it a normalized
+            # shadow copy outside the candidate tree
+            shadow = shadow_root / "cn" / "gamedata" / "story" / f"{ch['key']}.txt"
+            shadow.parent.mkdir(parents=True, exist_ok=True)
+            shadow.write_text(normalized, encoding="utf-8")
+            txt = shadow
+    s.storyTxt = txt
+    s.f = ch["key"]
+    return s
+
+
+def _supplement_metadata_drifted(jpath: Path, event: dict, ch: dict) -> bool:
+    """True when an existing JSON was baked with different catalog metadata.
+
+    Incremental conversion skips existing files; without this check the
+    RO1 five would keep their old extra-avg metadata (eventid/storyName)
+    forever even though the catalog now owns their titles.
+    """
+    try:
+        data = json.loads(jpath.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return True
+    return (
+        data.get("eventid") != event["event_id"]
+        or data.get("eventName") != event["name"]
+        or data.get("entryType") != event["entry_type"]
+        or data.get("storyCode") != ch["code"]
+        or data.get("storyName") != ch["name"]
+        or data.get("avgTag") != ch["avg_tag"]
+    )
+
+
 def convert_stories(candidate: Path, astr_path: Path) -> StoryStats:
     """Convert every story entry in the candidate that lacks a JSON.
 
@@ -172,6 +245,32 @@ def convert_stories(candidate: Path, astr_path: Path) -> StoryStats:
             counter = convert_one(story)
             if counter is not None:
                 wc[story.f] = counter
+
+    # supplement catalog chapters (roguelike). Runs BEFORE the extra-avg
+    # pass so the RO1 five get catalog metadata; getExtraAvg then skips
+    # them as already converted.
+    from .story_supplement import build_supplement
+    from .story_normalize import speaker_resolver
+
+    shadow_root = candidate.parent / ".astr-normalized"
+    if shadow_root.exists():
+        shutil.rmtree(shadow_root)
+    char_table = _load_json(zh / "gamedata/excel/character_table.json", {})
+    resolve = speaker_resolver(char_table)
+    briefs = _meta_raw_briefs(zh)
+    catalog = build_supplement(zh)
+    for event in catalog["events"]:
+        wc = wordcount.setdefault(event["event_id"], {})
+        for ch in event["chapters"]:
+            jpath = zh / STORY_DIR / f"{ch['key']}.json"
+            if jpath.exists() and _supplement_metadata_drifted(jpath, event, ch):
+                jpath.unlink()
+            story = _make_supplement_story(
+                func, link_root, event, ch, zh, briefs, resolve, shadow_root
+            )
+            counter = convert_one(story)
+            if counter is not None:
+                wc[ch["key"]] = counter
 
     # extra avg (情报处理室 etc.)
     try:
