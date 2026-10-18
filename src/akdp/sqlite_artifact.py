@@ -64,7 +64,7 @@ def validate_sqlite_descriptor(manifest: dict) -> dict:
     asset = manifest.get("assets", {}).get(contract.SQLITE_ASSET, {})
     return validate_descriptor(
         manifest.get("sqlite"),
-        source_version=manifest.get("source", {}).get("versionId", "manual"),
+        source_version=manifest.get("source", {}).get("versionId") or "manual",
         publication_revision=manifest.get("publicationRevision", 1),
         asset_size=asset.get("size"),
         asset_sha256=asset.get("sha256"),
@@ -189,7 +189,7 @@ def build_sqlite(
         value = json.loads(database.with_name(database.name + ".meta.json").read_text(encoding="utf-8"))
         validate_descriptor(
             value,
-            source_version=(source_info or {}).get("versionId", "manual"),
+            source_version=(source_info or {}).get("versionId") or "manual",
             publication_revision=revision,
             asset_size=compressed.stat().st_size,
             asset_sha256=_hash(compressed),

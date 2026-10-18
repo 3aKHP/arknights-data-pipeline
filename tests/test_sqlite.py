@@ -55,6 +55,32 @@ def test_sqlite_sidecar_uses_real_compiler_and_roundtrips_complete_fields(tmp_pa
         ).fetchone()[0] == 1
 
 
+@pytest.mark.parametrize("source_info", [
+    None,
+    {},
+    {"versionId": None},
+    {"versionId": ""},
+])
+def test_sqlite_sidecar_normalizes_missing_source_version(tmp_path, source_info):
+    root = tmp_path / "candidate"
+    _input(root)
+    dist = tmp_path / "dist"
+    value = build_sqlite(root, dist, source_info=source_info, revision=1)
+    assert value["sourceVersion"] == "manual"
+    validate_sqlite_descriptor({
+        "source": source_info or {},
+        "sqlite": value,
+        "assets": {contract.SQLITE_ASSET: {
+            "size": value["compressedSize"],
+            "sha256": value["compressedSha256"],
+        }},
+    })
+    with sqlite3.connect(dist / contract.SQLITE_DATABASE) as db:
+        assert db.execute(
+            "SELECT value FROM meta WHERE key='source_version'"
+        ).fetchone()[0] == "manual"
+
+
 def test_sqlite_compiler_is_required_no_json_only_fallback(tmp_path, monkeypatch):
     monkeypatch.delenv("PRTS_DATA_COMPILER", raising=False)
     monkeypatch.setattr("akdp.sqlite_artifact.shutil.which", lambda _: None)
