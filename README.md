@@ -23,7 +23,7 @@ SQLite 旁路由 PRTS-MCP 的 Rust 构建工具生成，完整保留候选树原
 
 也可传入 package/run 的 --sqlite-compiler。缺少编译器或任何校验失败都会停止发布，不回退为仅 JSON 发布。manifest 的 sqlite 描述符记录 schema/index、源版本/revision、编译器版本及压缩/解压两层长度与 SHA-256。未压缩 DB 留在本地 dist，Release 上传 gzip。后续基线恢复同时校验并恢复 DB 中的完整原始文件归档，保留旧 ZIP 未覆盖的未知文件；历史四资产 Release 继续仅从 ZIP 恢复，已声明但缺失或损坏的 DB 则阻止基线切换。
 
-CI 和数据管线默认固定 PRTS-MCP 编译器提交 `147a401c96b44ca7ae09ea89d9c5387c5bfd71b9`；可通过 PRTS_DATA_COMPILER_REF 仓库变量或 workflow_dispatch 的 compiler_ref 覆盖。正式启用前须完成该编译器提交的审查，先发出带 DB 的向前 revision，再启用消费者的 SQLite 后端。常规版本变更检测仍接受已有四资产 Release，不会因缺少 DB 自动重写历史公开版本。
+CI 和数据管线默认固定 PRTS-MCP 编译器提交 `4d71009b24c4ff1a5c8916253a85896cc1e2a750`；可通过 PRTS_DATA_COMPILER_REF 仓库变量或 workflow_dispatch 的 compiler_ref 覆盖。正式启用前须完成该编译器提交的审查，先发出带 DB 的向前 revision，再启用消费者的 SQLite 后端。常规版本变更检测仍接受已有四资产 Release，不会因缺少 DB 自动重写历史公开版本。
 
 ## 流水线
 

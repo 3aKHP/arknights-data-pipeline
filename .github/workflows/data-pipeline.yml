@@ -41,7 +41,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: 3aKHP/prts-mcp
-          ref: ${{ inputs.compiler_ref || vars.PRTS_DATA_COMPILER_REF || '147a401c96b44ca7ae09ea89d9c5387c5bfd71b9' }}
+          ref: ${{ inputs.compiler_ref || vars.PRTS_DATA_COMPILER_REF || '4d71009b24c4ff1a5c8916253a85896cc1e2a750' }}
           path: .compiler-src
           persist-credentials: false
 
