@@ -1,10 +1,12 @@
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from akdp import contract, publish
+from akdp.check import latest_published_version
 
 
 def _make_dist(root: Path, *, revision: int | None = None) -> tuple[Path, dict[str, str]]:
@@ -23,13 +25,13 @@ def _make_dist(root: Path, *, revision: int | None = None) -> tuple[Path, dict[s
     }
     if revision is not None:
         manifest["publicationRevision"] = revision
-    asset=manifest["assets"][contract.SQLITE_ASSET]
-    manifest["sqlite"]={
-        "contractVersion":"prts-mcp-sqlite/v1","schemaVersion":1,"indexVersion":1,
-        "language":"zh_CN","sourceVersion":manifest["source"]["versionId"],
-        "publicationRevision":revision or 1,"asset":contract.SQLITE_ASSET,
-        "compilerVersion":"test","sha256":"a"*64,"size":1,
-        "compressedSha256":asset["sha256"],"compressedSize":asset["size"],
+    asset = manifest["assets"][contract.SQLITE_ASSET]
+    manifest["sqlite"] = {
+        "contractVersion": "prts-mcp-sqlite/v1", "schemaVersion": 1, "indexVersion": 1,
+        "language": "zh_CN", "sourceVersion": manifest["source"]["versionId"],
+        "publicationRevision": revision or 1, "asset": contract.SQLITE_ASSET,
+        "compilerVersion": "test", "sha256": "a" * 64, "size": 1,
+        "compressedSha256": asset["sha256"], "compressedSize": asset["size"],
     }
     (dist / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     hashes = {
@@ -80,7 +82,6 @@ def test_publish_keeps_release_draft_until_verified(tmp_path, monkeypatch):
 
 
 def test_latest_published_version_ignores_incomplete_release(monkeypatch):
-    import subprocess
 
     incomplete = json.dumps({
         "tagName": "data-test",
@@ -94,7 +95,6 @@ def test_latest_published_version_ignores_incomplete_release(monkeypatch):
             args[0], 0, stdout=incomplete, stderr=""
         ),
     )
-    from akdp.check import latest_published_version
 
     assert latest_published_version() is None
 
@@ -129,7 +129,6 @@ def test_publish_repairs_public_incomplete_release_without_reopen(tmp_path, monk
 def test_latest_published_image_version_skips_incomplete_and_baseline(monkeypatch):
     """latest_published_image_version should skip drafts, baseline tags,
     and releases missing index.json."""
-    import subprocess
 
     # Step 1: gh release list returns tag list (no assets field supported).
     release_list = json.dumps([
@@ -164,7 +163,6 @@ def test_latest_published_image_version_skips_incomplete_and_baseline(monkeypatc
 
 
 def test_latest_published_image_version_none_when_no_images(monkeypatch):
-    import subprocess
 
     release_list = json.dumps([
         {"tagName": "data-v1", "isDraft": False},
@@ -326,8 +324,6 @@ def test_revision_public_race_never_clobbers_assets(tmp_path, monkeypatch):
 
 
 def test_existing_lts_release_without_database_does_not_trigger_automatic_rewrite(monkeypatch):
-    import subprocess
-    from akdp.check import latest_published_version
     release = json.dumps({
         "tagName": "data-existing", "isDraft": False,
         "assets": [{"name": name} for name in (

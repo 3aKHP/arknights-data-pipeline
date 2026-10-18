@@ -27,16 +27,18 @@ def _hash(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def descriptor(manifest: dict) -> dict:
-    """Validate the additive DB descriptor without changing the LTS contract."""
-    value = manifest.get("sqlite")
+def validate_descriptor(
+    value: dict, *, source_version: str, publication_revision: int,
+    asset_size: int, asset_sha256: str,
+) -> dict:
+    """Validate a DB descriptor against explicit provenance and asset values."""
     if not isinstance(value, dict):
         raise ValueError("missing SQLite descriptor")
     expected = {
         "contractVersion": SQLITE_CONTRACT, "schemaVersion": SCHEMA_VERSION,
         "indexVersion": INDEX_VERSION, "language": "zh_CN",
-        "sourceVersion": manifest.get("source", {}).get("versionId", "manual"),
-        "publicationRevision": manifest.get("publicationRevision", 1),
+        "sourceVersion": source_version,
+        "publicationRevision": publication_revision,
         "asset": contract.SQLITE_ASSET,
     }
     for key, wanted in expected.items():
@@ -51,10 +53,22 @@ def descriptor(manifest: dict) -> dict:
             raise ValueError(f"invalid SQLite {key}")
     if not isinstance(value.get("compilerVersion"), str) or not value["compilerVersion"]:
         raise ValueError("missing SQLite compilerVersion")
-    asset = manifest.get("assets", {}).get(contract.SQLITE_ASSET, {})
-    if type(asset.get("size")) is not int or asset.get("sha256") != value["compressedSha256"] or asset.get("size") != value["compressedSize"]:
+    if (type(asset_size) is not int or asset_sha256 != value["compressedSha256"]
+            or asset_size != value["compressedSize"]):
         raise ValueError("SQLite compressed asset differs from descriptor")
     return value
+
+
+def validate_sqlite_descriptor(manifest: dict) -> dict:
+    """Validate the manifest's additive DB descriptor or raise ValueError."""
+    asset = manifest.get("assets", {}).get(contract.SQLITE_ASSET, {})
+    return validate_descriptor(
+        manifest.get("sqlite"),
+        source_version=manifest.get("source", {}).get("versionId", "manual"),
+        publication_revision=manifest.get("publicationRevision", 1),
+        asset_size=asset.get("size"),
+        asset_sha256=asset.get("sha256"),
+    )
 
 
 def _verify(database: Path, compressed: Path, value: dict) -> None:
@@ -173,12 +187,13 @@ def build_sqlite(
         if result.returncode != 0:
             raise RuntimeError(f"SQLite compiler failed ({result.returncode}): {result.stderr.strip()}")
         value = json.loads(database.with_name(database.name + ".meta.json").read_text(encoding="utf-8"))
-        descriptor({
-            "source": source_info or {}, "publicationRevision": revision, "sqlite": value,
-            "assets": {contract.SQLITE_ASSET: {
-                "sha256": value.get("compressedSha256"), "size": value.get("compressedSize"),
-            }},
-        })
+        validate_descriptor(
+            value,
+            source_version=(source_info or {}).get("versionId", "manual"),
+            publication_revision=revision,
+            asset_size=compressed.stat().st_size,
+            asset_sha256=_hash(compressed),
+        )
         _verify(database, compressed, value)
         # The outer manifest is written last by package_candidate.
         os.replace(compressed, dist / contract.SQLITE_ASSET)

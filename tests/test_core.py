@@ -97,11 +97,15 @@ def test_validate_record_regression(tmp_path):
 
 def _complete_sqlite_input(zh):
     for name in contract.REQUIRED_EXCEL_FILES:
-        path=zh / "gamedata/excel" / name
+        path = zh / "gamedata/excel" / name
         if not path.exists():
-            value = {"stages": {}} if name == "stage_table.json" else {"items": {}} if name == "item_table.json" else {}
+            value = {
+                "stage_table.json": {"stages": {}},
+                "item_table.json": {"items": {}},
+            }.get(name, {})
             _write(zh, "gamedata/excel/" + name, value)
-    if not (zh / "storyinfo.json").exists(): _write(zh, "storyinfo.json", {})
+    if not (zh / "storyinfo.json").exists():
+        _write(zh, "storyinfo.json", {})
 
 
 def test_package_stamps_publication_revision_and_llm_digest(tmp_path):

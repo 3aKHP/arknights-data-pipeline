@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import contract
 from .package import _sha256
-from .sqlite_artifact import descriptor as sqlite_descriptor
+from .sqlite_artifact import validate_sqlite_descriptor
 
 #: this repo is the distribution repo
 DIST_REPO = "3aKHP/arknights-data-pipeline"
@@ -146,7 +146,7 @@ def publish(
         if expected.get("size") != path.stat().st_size or expected.get("sha256") != _sha256(path):
             raise ValueError(f"local asset does not match manifest: {path.name}")
 
-    sqlite_descriptor(manifest)
+    validate_sqlite_descriptor(manifest)
 
     if revision >= 2:
         max_existing = max(_existing_revisions(source_id), default=1)

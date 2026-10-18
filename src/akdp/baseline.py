@@ -24,7 +24,7 @@ from . import contract
 from .check import parse_release_tag
 from .package import _sha256
 from .publish import DIST_REPO
-from .sqlite_artifact import descriptor, restore_originals
+from .sqlite_artifact import restore_originals, validate_sqlite_descriptor
 
 
 def _gh_download(repo: str, tag: str | None, asset: str, dest: Path) -> None:
@@ -210,7 +210,7 @@ def download_baseline(baseline: Path, *, clobber: bool = False) -> None:
             if has_sqlite:
                 if manifest is None or contract.SQLITE_ASSET not in remote_assets:
                     raise RuntimeError("SQLite baseline requires its manifest and compressed asset")
-                value = descriptor(manifest)
+                value = validate_sqlite_descriptor(manifest)
                 _gh_download(DIST_REPO, tag, contract.SQLITE_ASSET, staging)
                 _verify_asset_digest(staging / contract.SQLITE_ASSET,
                                      remote_assets[contract.SQLITE_ASSET])
