@@ -24,7 +24,7 @@ def _mk_tree(root: Path, *, char_names, old_level: bool = True) -> None:
     _write(zh, "gamedata/excel/character_table.json",
            {f"char_{i}": {"name": n, "rarity": "TIER_5"} for i, n in enumerate(char_names)})
     for name in ("handbook_info_table", "charword_table", "story_review_table",
-                 "enemy_handbook_table", "zone_table"):
+                 "enemy_handbook_table", "zone_table", "building_data", "skin_table", "skill_table"):
         _write(zh, f"gamedata/excel/{name}.json", {})
     _write(zh, "gamedata/excel/stage_table.json", {"stages": {"a": {}}})
     _write(zh, "gamedata/excel/item_table.json", {"items": {"i1": {}}})
@@ -95,10 +95,24 @@ def test_validate_record_regression(tmp_path):
     assert any("record regression" in e for e in res.errors)
 
 
+def _complete_sqlite_input(zh):
+    for name in contract.REQUIRED_EXCEL_FILES:
+        path = zh / "gamedata/excel" / name
+        if not path.exists():
+            value = {
+                "stage_table.json": {"stages": {}},
+                "item_table.json": {"items": {}},
+            }.get(name, {})
+            _write(zh, "gamedata/excel/" + name, value)
+    if not (zh / "storyinfo.json").exists():
+        _write(zh, "storyinfo.json", {})
+
+
 def test_package_stamps_publication_revision_and_llm_digest(tmp_path):
     candidate = tmp_path / "candidate" / "zh_CN"
     _write(candidate, "gamedata/excel/character_table.json", {"char_1": {"rarity": "TIER_5"}})
     _write(candidate, "gamedata/levels/enemydata/enemy_database.json", {"enemies": []})
+    _complete_sqlite_input(candidate)
     ledger = tmp_path / "llm-ledger.jsonl"
     records = [
         {"verdict": "pass", "endpoint_fingerprint": "aaaa1111aaaa1111",
@@ -278,6 +292,7 @@ def test_package_is_byte_reproducible(tmp_path):
     _write(candidate, "gamedata/story/activities/test.json", {"storyList": []})
     _write(candidate, "storyinfo.json", {})
 
+    _complete_sqlite_input(candidate)
     first = tmp_path / "dist-first"
     second = tmp_path / "dist-second"
     first_manifest = package_candidate(candidate.parent, first)
@@ -289,7 +304,7 @@ def test_package_is_byte_reproducible(tmp_path):
     assert first_manifest["pipeline"]["commit"]
     assert "flatc" in first_manifest["tools"]
 
-    for name in (contract.EXCEL_ASSET, contract.LEVELS_ASSET, contract.STORY_ASSET):
+    for name in (contract.EXCEL_ASSET, contract.LEVELS_ASSET, contract.STORY_ASSET, contract.SQLITE_ASSET):
         assert hashlib.sha256((first / name).read_bytes()).digest() == hashlib.sha256(
             (second / name).read_bytes()
         ).digest()

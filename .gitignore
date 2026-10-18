@@ -10,3 +10,5 @@ spike/image-output/
 bin/
 .env
 .zcode/
+
+.compiler-src/

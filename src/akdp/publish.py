@@ -1,7 +1,7 @@
-"""Publish step: upload the four assets as a single release on this repo.
+"""Publish step: upload LTS ZIPs, SQLite gzip and manifest as one release.
 
 The factory repo (3aKHP/arknights-data-pipeline) is its own distribution
-point — one Release per game version, carrying all three zips as assets.
+point — one Release per game version, retaining all three LTS ZIP assets.
 
 Tag convention: data-<versionId> (e.g. data-26-08-03-23-34-20_a745fc)
 """
@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import contract
 from .package import _sha256
+from .sqlite_artifact import validate_sqlite_descriptor
 
 #: this repo is the distribution repo
 DIST_REPO = "3aKHP/arknights-data-pipeline"
@@ -30,6 +31,7 @@ RELEASE_ASSETS = [
     contract.LEVELS_ASSET,
     contract.STORY_ASSET,
     contract.MANIFEST_ASSET,
+    contract.SQLITE_ASSET,
 ]
 
 MAX_RETRIES = 3
@@ -143,6 +145,8 @@ def publish(
         expected = manifest.get("assets", {}).get(path.name, {})
         if expected.get("size") != path.stat().st_size or expected.get("sha256") != _sha256(path):
             raise ValueError(f"local asset does not match manifest: {path.name}")
+
+    validate_sqlite_descriptor(manifest)
 
     if revision >= 2:
         max_existing = max(_existing_revisions(source_id), default=1)

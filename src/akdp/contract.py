@@ -19,6 +19,9 @@ REQUIRED_EXCEL_FILES = [
     # consumers only read the files they know, so requiring it here is
     # forward-compatible.
     "gacha_table.json",
+    "building_data.json",
+    "skin_table.json",
+    "skill_table.json",
 ]
 
 #: files PRTS-MCP requires under zh_CN/gamedata/levels/
@@ -36,6 +39,8 @@ EXCEL_ASSET = "zh_CN-excel.zip"
 LEVELS_ASSET = "zh_CN-levels.zip"
 STORY_ASSET = "zh_CN.zip"
 MANIFEST_ASSET = "manifest.json"
+SQLITE_DATABASE = "zh_CN.sqlite"
+SQLITE_ASSET = SQLITE_DATABASE + ".gz"
 
 # Versioned consumer contract. PRTS-MCP consumers validate the manifest with an
 # EXACT match on this string, so a bump rejects every deployed client: only bump

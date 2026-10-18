@@ -5,6 +5,12 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      compiler_ref:
+        description: "PRTS-MCP compiler commit/tag (repository variable or pinned commit by default)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -17,6 +23,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: true
+      - name: Build the versioned PRTS data compiler
+        uses: ./.github/actions/build-prts-compiler
+        with:
+          compiler-ref: ${{ inputs.compiler_ref || vars.PRTS_DATA_COMPILER_REF }}
+
       - uses: actions/setup-python@v7
         with:
           python-version: '3.11'

@@ -1,0 +1,29 @@
+name: Build PRTS data compiler
+description: Check out and build the shared versioned SQLite data compiler
+inputs:
+  compiler-ref:
+    description: Optional PRTS-MCP commit or tag overriding the pinned default
+    required: false
+runs:
+  using: composite
+  steps:
+    - name: Checkout the versioned PRTS data compiler
+      uses: actions/checkout@v7
+      with:
+        repository: 3aKHP/prts-mcp
+        ref: ${{ inputs.compiler-ref || '4d71009b24c4ff1a5c8916253a85896cc1e2a750' }}
+        path: .compiler-src
+        persist-credentials: false
+
+    - uses: dtolnay/rust-toolchain@1.96.1
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: .compiler-src -> target
+        key: sqlite-compiler-v1
+
+    - name: Build the SQLite data compiler
+      shell: bash
+      run: |
+        cargo build --manifest-path .compiler-src/Cargo.toml --locked --release --example data_compiler
+        echo "PRTS_DATA_COMPILER=$GITHUB_WORKSPACE/.compiler-src/target/release/examples/data_compiler" >> "$GITHUB_ENV"

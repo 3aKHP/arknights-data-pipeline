@@ -1,16 +1,18 @@
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from akdp import contract, publish
+from akdp.check import latest_published_version
 
 
 def _make_dist(root: Path, *, revision: int | None = None) -> tuple[Path, dict[str, str]]:
     dist = root / "dist"
     dist.mkdir()
-    for name in (contract.EXCEL_ASSET, contract.LEVELS_ASSET, contract.STORY_ASSET):
+    for name in (contract.EXCEL_ASSET, contract.LEVELS_ASSET, contract.STORY_ASSET, contract.SQLITE_ASSET):
         path = dist / name
         path.write_bytes(name.encode("utf-8"))
     manifest: dict = {
@@ -19,10 +21,18 @@ def _make_dist(root: Path, *, revision: int | None = None) -> tuple[Path, dict[s
         "validation": {"errors": []},
         "assets": {name: {"size": (dist / name).stat().st_size,
                           "sha256": hashlib.sha256((dist / name).read_bytes()).hexdigest()}
-                   for name in (contract.EXCEL_ASSET, contract.LEVELS_ASSET, contract.STORY_ASSET)},
+                   for name in (contract.EXCEL_ASSET, contract.LEVELS_ASSET, contract.STORY_ASSET, contract.SQLITE_ASSET)},
     }
     if revision is not None:
         manifest["publicationRevision"] = revision
+    asset = manifest["assets"][contract.SQLITE_ASSET]
+    manifest["sqlite"] = {
+        "contractVersion": "prts-mcp-sqlite/v1", "schemaVersion": 1, "indexVersion": 1,
+        "language": "zh_CN", "sourceVersion": manifest["source"]["versionId"],
+        "publicationRevision": revision or 1, "asset": contract.SQLITE_ASSET,
+        "compilerVersion": "test", "sha256": "a" * 64, "size": 1,
+        "compressedSha256": asset["sha256"], "compressedSize": asset["size"],
+    }
     (dist / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     hashes = {
         name: hashlib.sha256((dist / name).read_bytes()).hexdigest()
@@ -72,7 +82,6 @@ def test_publish_keeps_release_draft_until_verified(tmp_path, monkeypatch):
 
 
 def test_latest_published_version_ignores_incomplete_release(monkeypatch):
-    import subprocess
 
     incomplete = json.dumps({
         "tagName": "data-test",
@@ -86,7 +95,6 @@ def test_latest_published_version_ignores_incomplete_release(monkeypatch):
             args[0], 0, stdout=incomplete, stderr=""
         ),
     )
-    from akdp.check import latest_published_version
 
     assert latest_published_version() is None
 
@@ -121,7 +129,6 @@ def test_publish_repairs_public_incomplete_release_without_reopen(tmp_path, monk
 def test_latest_published_image_version_skips_incomplete_and_baseline(monkeypatch):
     """latest_published_image_version should skip drafts, baseline tags,
     and releases missing index.json."""
-    import subprocess
 
     # Step 1: gh release list returns tag list (no assets field supported).
     release_list = json.dumps([
@@ -156,7 +163,6 @@ def test_latest_published_image_version_skips_incomplete_and_baseline(monkeypatc
 
 
 def test_latest_published_image_version_none_when_no_images(monkeypatch):
-    import subprocess
 
     release_list = json.dumps([
         {"tagName": "data-v1", "isDraft": False},
@@ -254,7 +260,7 @@ def test_verify_manifest_accepts_datarev_tag(tmp_path):
 
     staging = tmp_path
     assets = {}
-    for name in (contract.EXCEL_ASSET, contract.LEVELS_ASSET, contract.STORY_ASSET):
+    for name in (contract.EXCEL_ASSET, contract.LEVELS_ASSET, contract.STORY_ASSET, contract.SQLITE_ASSET):
         p = staging / name
         p.write_bytes(name.encode("utf-8"))
         assets[name] = {"sha256": _sha256(p), "size": p.stat().st_size}
@@ -315,3 +321,15 @@ def test_revision_public_race_never_clobbers_assets(tmp_path, monkeypatch):
     monkeypatch.setattr(publish, "_run_with_retry", lambda *a: pytest.fail("public revision mutated"))
     with pytest.raises(ValueError, match="immutable"):
         publish.publish(dist, source_id="V", title_suffix="V", dry_run=False, revision=2)
+
+
+def test_existing_lts_release_without_database_does_not_trigger_automatic_rewrite(monkeypatch):
+    release = json.dumps({
+        "tagName": "data-existing", "isDraft": False,
+        "assets": [{"name": name} for name in (
+            contract.EXCEL_ASSET, contract.LEVELS_ASSET,
+            contract.STORY_ASSET, contract.MANIFEST_ASSET)],
+    })
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs:
+        subprocess.CompletedProcess(args[0], 0, stdout=release, stderr=""))
+    assert latest_published_version() == "existing"
