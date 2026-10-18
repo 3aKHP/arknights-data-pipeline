@@ -13,8 +13,17 @@
 2. **可验证**：每次发布附带 manifest（源版本、工具版本、包哈希、记录指标、
    排除项、合并统计）；校验门不过则不发布（fail-closed）。
 3. **可追溯恢复**：Release 序列保留历史档案；现代消费者按源版本与发布修订号比较更新，恢复数据使用新的向前修订，修改 Latest 标记不构成回滚。
-4. **统一分发**：一个 `data-<versionId>` Release 带四个 asset，替代旧的两个 fork
+4. **统一分发**：一个 `data-<versionId>` Release 带五个 asset，替代旧的两个 fork
    仓库 + 两种 tag 前缀的历史模式。
+
+SQLite 旁路由 PRTS-MCP 的 Rust 构建工具生成，完整保留候选树原始字节与全部字段；原三个 ZIP 与 legacy 投影保留。打包时必须提供编译器：
+
+    cargo build --manifest-path /path/to/prts-mcp/Cargo.toml --locked --release --example data_compiler
+    export PRTS_DATA_COMPILER=/path/to/prts-mcp/target/release/examples/data_compiler
+
+也可传入 package/run 的 --sqlite-compiler。缺少编译器或任何校验失败都会停止发布，不回退为仅 JSON 发布。manifest 的 sqlite 描述符记录 schema/index、源版本/revision、编译器版本及压缩/解压两层长度与 SHA-256。未压缩 DB 留在本地 dist，Release 上传 gzip。
+
+CI 和数据管线默认固定 PRTS-MCP 编译器提交 `147a401c96b44ca7ae09ea89d9c5387c5bfd71b9`；可通过 PRTS_DATA_COMPILER_REF 仓库变量或 workflow_dispatch 的 compiler_ref 覆盖。正式启用前须完成该编译器提交的审查，先发出带 DB 的向前 revision，再启用消费者的 SQLite 后端。常规版本变更检测仍接受已有四资产 Release，不会因缺少 DB 自动重写历史公开版本。
 
 ## 流水线
 
@@ -26,17 +35,18 @@ merge      基线 Release 树 ⊕ 新解包树 → 候选树（新文件覆盖�
 story      剧情 txt → JSON（vendor/ASTR-Script，含大小写错位修复与索引重建）；并生成肉鸽补充目录 story_supplement.json
 summarize  增量 LLM 双级别摘要（summaries.json + event_summaries.json）
 validate   校验门：契约文件、探针、记录数回归、UTF-8、累积不变量、剧情转换完整性
-package    三个 zip + manifest.json
-publish    data-* 单 Release 四 asset，发到工厂仓库自身（gh CLI）
+package    三个 LTS zip + zh_CN.sqlite.gz + manifest.json
+publish    data-* 单 Release 五 asset，发到工厂仓库自身（gh CLI）
 ```
 
 ## 分发
 
-每个游戏版本一个 Release（`data-<versionId>`），保持 draft 直到校验完成，带四个 asset：
+每个游戏版本一个 Release（`data-<versionId>`），保持 draft 直到校验完成，带五个 asset：
 - `zh_CN-excel.zip` — 数值表
 - `zh_CN-levels.zip` — 关卡数据
 - `zh_CN.zip` — excel + 剧情 JSON + ASTR 索引 + LLM 摘要 + 肉鸽补充目录
-- `manifest.json` — 契约版本、源版本、校验指标和三个包的大小/SHA-256
+- `zh_CN.sqlite.gz` — 完整源 SQLite 与预编译查询索引
+- `manifest.json` — 契约版本、源版本、校验指标、所有资产摘要与 SQLite 描述符
 
 Release notes 同步内嵌 manifest，方便人工审计。manifest 还记录流水线 commit、
 ASTR/flatc 等转换器来源、归一化/排除政策以及每个包的大小和 SHA-256；消费端优先

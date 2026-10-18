@@ -1,4 +1,4 @@
-"""Package the candidate tree into the three distribution zips + manifest."""
+"""Package unchanged LTS ZIPs, a complete SQLite sidecar and the manifest."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from pathlib import Path
 
 from . import __version__, contract
 from .normalize import policy_manifest
+from .sqlite_artifact import build_sqlite
 
 _ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
 
@@ -114,8 +115,9 @@ def package_candidate(
     normalization: dict | None = None,
     revision: int = 1,
     llm_ledger: Path | None = None,
+    sqlite_compiler: Path | str | None = None,
 ) -> dict:
-    """Build zh_CN-excel.zip / zh_CN-levels.zip / zh_CN.zip + manifest.json.
+    """Build the three LTS ZIPs, SQLite+gzip and the additive manifest.
 
     Returns the manifest dict. `revision` becomes manifest
     publicationRevision: 1 for normal releases, N >= 2 for datarev repair
@@ -154,8 +156,12 @@ def package_candidate(
             if p.exists():
                 _write_deterministic(zf, p, f"zh_CN/{name}")
 
+    sqlite = build_sqlite(candidate, dist, source_info=source_info, revision=revision, compiler=sqlite_compiler)
+    assets[contract.SQLITE_ASSET] = dist / contract.SQLITE_ASSET
+
     manifest = {
         "pipelineVersion": __version__,
+        "sqlite": sqlite,
         "publicationRevision": revision,
         "pipeline": _git_provenance(),
         "contractVersion": contract.CONTRACT_VERSION,

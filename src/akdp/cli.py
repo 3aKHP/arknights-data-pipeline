@@ -226,6 +226,7 @@ def cmd_package(args: argparse.Namespace) -> int:
         normalization=policy_manifest(),
         revision=getattr(args, "revision", 1),
         llm_ledger=workdir / "llm-ledger.jsonl",
+        sqlite_compiler=getattr(args, "sqlite_compiler", None),
     )
     for name, meta in manifest["assets"].items():
         print(f"packaged {name} ({meta['size'] / 1e6:.1f} MB, sha256 {meta['sha256'][:12]}…)")
@@ -628,7 +629,8 @@ def main() -> int:
     p = sub.add_parser("merge", help="normalize + merge into candidate tree")
     p.set_defaults(func=cmd_merge)
 
-    p = sub.add_parser("package", help="build distribution zips + manifest")
+    p = sub.add_parser("package", help="build LTS zips, full SQLite database and manifest")
+    p.add_argument("--sqlite-compiler", type=Path, help="Rust compiler path (or PRTS_DATA_COMPILER)")
     p.add_argument("--revision", type=_publication_revision, default=1,
                    help="publicationRevision stamped into the manifest "
                         "(>=2 for datarev repair revisions)")
@@ -683,6 +685,7 @@ def main() -> int:
     p.set_defaults(func=cmd_images_latest_tag)
 
     p = sub.add_parser("run", help="check -> baseline -> fetch -> merge -> story -> summarize -> validate -> package")
+    p.add_argument("--sqlite-compiler", type=Path, help="Rust compiler path (or PRTS_DATA_COMPILER)")
     p.add_argument("--clobber", action="store_true")
     p.add_argument("--force", action="store_true", help="run even if versionId is unchanged")
     p.add_argument("--publish", action="store_true", help="auto-publish after successful run")
