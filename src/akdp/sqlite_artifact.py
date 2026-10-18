@@ -1,6 +1,7 @@
 """Build and independently verify the full SQLite sidecar with the Rust compiler."""
 from __future__ import annotations
 
+from contextlib import closing
 import gzip
 import hashlib
 import json
@@ -11,6 +12,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+import zlib
 
 from . import contract
 
@@ -71,7 +73,7 @@ def _verify(database: Path, compressed: Path, value: dict) -> None:
             hasher.update(chunk)
     if count != value["size"] or hasher.hexdigest() != value["sha256"]:
         raise ValueError("SQLite gzip does not contain the declared database")
-    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as db:
+    with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as db:
         if db.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID:
             raise ValueError("invalid SQLite application ID")
         if db.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
@@ -89,6 +91,65 @@ def _verify(database: Path, compressed: Path, value: dict) -> None:
         }
         if any(metadata.get(k) != v for k, v in required.items()):
             raise ValueError("SQLite metadata differs from descriptor")
+
+
+def restore_originals(compressed: Path, value: dict, destination: Path) -> None:
+    """Recover the full candidate tree, including files outside the legacy ZIPs."""
+    with tempfile.TemporaryDirectory(prefix=".sqlite-restore-", dir=compressed.parent) as temporary:
+        database = Path(temporary) / contract.SQLITE_DATABASE
+        count = 0
+        with gzip.open(compressed, "rb") as source, database.open("wb") as output:
+            for chunk in iter(lambda: source.read(1 << 16), b""):
+                count += len(chunk)
+                if count > value["size"]:
+                    raise ValueError("SQLite decoded database exceeds declared size")
+                output.write(chunk)
+        _verify(database, compressed, value)
+        root = destination.resolve()
+        restored = 0
+        with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as db:
+            rows = db.execute(
+                "SELECT s.path,b.raw_len,s.sha256,b.body FROM sources s "
+                "LEFT JOIN source_blobs b ON s.sha256=b.sha256 "
+                "WHERE s.namespace='original' ORDER BY s.path"
+            )
+            for path, length, digest, encoded in rows:
+                parts = path.split("/") if isinstance(path, str) else []
+                if (not parts or parts[0] != "zh_CN" or len(parts) < 2
+                        or any(part in ("", ".", "..") for part in parts)
+                        or "\\" in path or "\0" in path):
+                    raise ValueError("unsafe SQLite original source path")
+                target = destination.joinpath(*parts)
+                if not target.resolve().is_relative_to(root) or target.is_symlink():
+                    raise ValueError("unsafe SQLite original source destination")
+                if (type(length) is not int or length < 0 or not isinstance(encoded, bytes)
+                        or not isinstance(digest, str) or not re.fullmatch("[0-9a-f]{64}", digest)):
+                    raise ValueError("invalid SQLite original source blob")
+                exists = target.exists()
+                if exists and (not target.is_file() or target.stat().st_size != length
+                               or _hash(target) != digest):
+                    raise ValueError("SQLite original source differs from legacy ZIP")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                # Existing ZIP files must agree; only SQLite-only files need writing.
+                with (open(os.devnull, "wb") if exists else target.open("wb")) as output:
+                    decoder = zlib.decompressobj()
+                    hasher = hashlib.sha256()
+                    total = 0
+                    remaining = encoded
+                    while remaining:
+                        chunk = decoder.decompress(remaining, min(1 << 16, length - total + 1))
+                        total += len(chunk)
+                        if total > length:
+                            raise ValueError("SQLite original source exceeds declared size")
+                        output.write(chunk)
+                        hasher.update(chunk)
+                        remaining = decoder.unconsumed_tail
+                    if (not decoder.eof or decoder.unused_data or total != length
+                            or hasher.hexdigest() != digest):
+                        raise ValueError("SQLite original source checksum/length mismatch")
+                restored += 1
+        if restored == 0:
+            raise ValueError("SQLite baseline has no original source archive")
 
 
 def build_sqlite(

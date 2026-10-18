@@ -24,6 +24,7 @@ from . import contract
 from .check import parse_release_tag
 from .package import _sha256
 from .publish import DIST_REPO
+from .sqlite_artifact import descriptor, restore_originals
 
 
 def _gh_download(repo: str, tag: str | None, asset: str, dest: Path) -> None:
@@ -113,14 +114,14 @@ def _verify_asset_digest(path: Path, metadata: dict) -> None:
         )
 
 
-def _verify_manifest(staging: Path, release: dict) -> None:
+def _verify_manifest(staging: Path, release: dict) -> dict | None:
     manifest_path = staging / contract.MANIFEST_ASSET
     tag = str(release.get("tagName", ""))
     parsed = parse_release_tag(tag)
     if not manifest_path.exists():
         if tag.startswith("datarev-"):
             raise RuntimeError("repair baseline requires a manifest")
-        return  # Transition compatibility for the first factory Release.
+        return None  # Transition compatibility for the first factory Release.
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if manifest["contractVersion"] != contract.CONTRACT_VERSION:
@@ -140,6 +141,7 @@ def _verify_manifest(staging: Path, release: dict) -> None:
                 "size": int(expected["size"]),
                 "digest": f"sha256:{expected['sha256']}",
             })
+        return manifest
     except (OSError, KeyError, TypeError, ValueError) as exc:
         raise RuntimeError(f"factory manifest verification failed: {exc}") from exc
 
@@ -199,7 +201,19 @@ def download_baseline(baseline: Path, *, clobber: bool = False) -> None:
                 _verify_asset_digest(staging / asset, remote_assets[asset])
             if contract.MANIFEST_ASSET in remote_assets:
                 _gh_download(DIST_REPO, tag, contract.MANIFEST_ASSET, staging)
-            _verify_manifest(staging, factory)
+            manifest = _verify_manifest(staging, factory)
+            has_sqlite = contract.SQLITE_ASSET in remote_assets or (
+                manifest is not None and (
+                    "sqlite" in manifest or contract.SQLITE_ASSET in manifest["assets"]
+                )
+            )
+            if has_sqlite:
+                if manifest is None or contract.SQLITE_ASSET not in remote_assets:
+                    raise RuntimeError("SQLite baseline requires its manifest and compressed asset")
+                value = descriptor(manifest)
+                _gh_download(DIST_REPO, tag, contract.SQLITE_ASSET, staging)
+                _verify_asset_digest(staging / contract.SQLITE_ASSET,
+                                     remote_assets[contract.SQLITE_ASSET])
         else:
             raise RuntimeError(
                 "factory has no published Release; seed work/baseline from a "
@@ -209,6 +223,8 @@ def download_baseline(baseline: Path, *, clobber: bool = False) -> None:
         for asset in (contract.EXCEL_ASSET, contract.LEVELS_ASSET, contract.STORY_ASSET):
             with zipfile.ZipFile(staging / asset) as zf:
                 zf.extractall(candidate)
+        if has_sqlite:
+            restore_originals(staging / contract.SQLITE_ASSET, value, candidate)
         shutil.rmtree(staging)
         if not _baseline_ready(candidate):
             raise RuntimeError("downloaded baseline is missing required contract files")
