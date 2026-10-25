@@ -20,12 +20,12 @@ def run_arkprts(
     backoff_seconds: int = 30,
     extra_env: dict | None = None,
 ) -> None:
-    """Run `python -m arkprts.assets` until it succeeds or attempts run out."""
+    """Run the adapted arkprts CLI until it succeeds or attempts run out."""
     extract_root.mkdir(parents=True, exist_ok=True)
     last_log = ""
     for i in range(1, attempts + 1):
         proc = subprocess.run(
-            [sys.executable, "-m", "arkprts.assets", str(extract_root),
+            [sys.executable, "-m", "akdp._arkprts", str(extract_root),
              "--server", server, "--log-level", "INFO"],
             capture_output=True, text=True,
         )

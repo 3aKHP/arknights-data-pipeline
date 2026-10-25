@@ -12,7 +12,7 @@ The catalog is a derived artifact: it is regenerated from the candidate
 tree on every story run and carries the source versionId for drift
 detection. Chapter keys keep the client tables' original casing; the
 story conversion layer resolves them to on-disk lowercase files via
-case-fix symlinks (see story._fix_case_mismatches).
+temporary case-fix symlinks (see story._fix_case_mismatches).
 
 Deliberately out of scope: `ref_*` image lists, tutorial prompts, and
 `text_scene_*` ending-recap templates (UI text, not narrative). The 12

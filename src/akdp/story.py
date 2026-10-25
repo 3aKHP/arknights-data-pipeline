@@ -25,7 +25,7 @@ class StoryStats:
     converted: list[str] = field(default_factory=list)
     missing_source: list[str] = field(default_factory=list)  # json wanted but no .txt
     failed: list[dict] = field(default_factory=list)
-    case_fixed: list[dict] = field(default_factory=list)  # case-mismatch symlinks created
+    case_fixed: list[dict] = field(default_factory=list)  # temporary case-mismatch symlinks
 
     def to_dict(self) -> dict:
         return {
@@ -70,7 +70,8 @@ def _fix_case_mismatches(zh: Path) -> list[dict]:
 
     The client tables reference e.g. `Obt/Roguelike/RO1/...` while
     the extracted files live at `obt/roguelike/ro1/...`; on a case-sensitive
-    filesystem the vendored converter would otherwise miss them.
+    filesystem the vendored converter would otherwise miss them. The caller
+    removes these temporary links before validation and packaging.
     """
     story_dir = zh / STORY_DIR
     if not story_dir.is_dir():
@@ -209,90 +210,94 @@ def convert_stories(candidate: Path, astr_path: Path) -> StoryStats:
     stats = StoryStats()
     stats.case_fixed = _fix_case_mismatches(zh)
 
-    # expose zh_CN as cn/ for the vendored code
-    link_root = candidate.parent / ".astr-src"
-    link = link_root / "cn"
-    link_root.mkdir(exist_ok=True)
-    if link.is_symlink() or link.exists():
-        link.unlink()
-    os.symlink(zh.resolve(), link)
-
-    storyinfo = _load_json(zh / "storyinfo.json", {})
-    wordcount = _load_json(zh / "wordcount.json", {})
-    extrainfo = _load_json(zh / "extrastory.json", {"extra": []})
-
-    def convert_one(story) -> None:
-        jpath = zh / STORY_DIR / f"{story.f}.json"
-        if jpath.exists():
-            return
-        try:
-            story_json, counter = jsonconvert.reader(story)
-        except FileNotFoundError:
-            stats.missing_source.append(story.f)
-            return
-        except Exception as e:  # parser failure on one file must not kill the run
-            stats.failed.append({"story": story.f, "error": f"{type(e).__name__}: {e}"})
-            return
-        jpath.parent.mkdir(parents=True, exist_ok=True)
-        jpath.write_text(json.dumps(story_json, ensure_ascii=False), encoding="utf-8")
-        storyinfo[story.f] = story_json.get("storyInfo", "")
-        stats.converted.append(story.f)
-        return counter
-
-    for event in func.getEvents(link_root, "cn"):
-        wc = wordcount.setdefault(event.eventid, {})
-        for story in event:
-            counter = convert_one(story)
-            if counter is not None:
-                wc[story.f] = counter
-
-    # supplement catalog chapters (roguelike). Runs BEFORE the extra-avg
-    # pass so the RO1 five get catalog metadata; getExtraAvg then skips
-    # them as already converted.
-    from .story_supplement import build_supplement
-    from .story_normalize import speaker_resolver
-
-    shadow_root = candidate.parent / ".astr-normalized"
-    if shadow_root.exists():
-        shutil.rmtree(shadow_root)
-    char_table = _load_json(zh / "gamedata/excel/character_table.json", {})
-    resolve = speaker_resolver(char_table)
-    briefs = _meta_raw_briefs(zh)
-    catalog = build_supplement(zh)
-    for event in catalog["events"]:
-        wc = wordcount.setdefault(event["event_id"], {})
-        for ch in event["chapters"]:
-            jpath = zh / STORY_DIR / f"{ch['key']}.json"
-            if jpath.exists() and _supplement_metadata_drifted(jpath, event, ch):
-                jpath.unlink()
-            story = _make_supplement_story(
-                func, link_root, event, ch, zh, briefs, resolve, shadow_root
-            )
-            counter = convert_one(story)
-            if counter is not None:
-                wc[ch["key"]] = counter
-
-    # extra avg (情报处理室 etc.)
     try:
-        extra_list = []
-        for extra in func.getExtraAvg(link_root, "cn"):
-            counter = convert_one(extra)
-            if (zh / STORY_DIR / f"{extra.f}.json").exists():
-                extra_list.append({"storyName": extra.storyName, "storyTxt": extra.f})
-        extrainfo["extra"] = extra_list
-    except Exception as e:
-        stats.failed.append({"story": "<extra-avg>", "error": f"{type(e).__name__}: {e}"})
+        # expose zh_CN as cn/ for the vendored code
+        link_root = candidate.parent / ".astr-src"
+        link = link_root / "cn"
+        link_root.mkdir(exist_ok=True)
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        os.symlink(zh.resolve(), link)
 
-    (zh / "storyinfo.json").write_text(
-        json.dumps(storyinfo, ensure_ascii=False), encoding="utf-8"
-    )
-    (zh / "wordcount.json").write_text(
-        json.dumps(wordcount, ensure_ascii=False), encoding="utf-8"
-    )
-    (zh / "extrastory.json").write_text(
-        json.dumps(extrainfo, ensure_ascii=False), encoding="utf-8"
-    )
-    _regen_chardict(zh)
+        storyinfo = _load_json(zh / "storyinfo.json", {})
+        wordcount = _load_json(zh / "wordcount.json", {})
+        extrainfo = _load_json(zh / "extrastory.json", {"extra": []})
 
-    stats.converted.sort()
-    return stats
+        def convert_one(story) -> None:
+            jpath = zh / STORY_DIR / f"{story.f}.json"
+            if jpath.exists():
+                return
+            try:
+                story_json, counter = jsonconvert.reader(story)
+            except FileNotFoundError:
+                stats.missing_source.append(story.f)
+                return
+            except Exception as e:  # parser failure on one file must not kill the run
+                stats.failed.append({"story": story.f, "error": f"{type(e).__name__}: {e}"})
+                return
+            jpath.parent.mkdir(parents=True, exist_ok=True)
+            jpath.write_text(json.dumps(story_json, ensure_ascii=False), encoding="utf-8")
+            storyinfo[story.f] = story_json.get("storyInfo", "")
+            stats.converted.append(story.f)
+            return counter
+
+        for event in func.getEvents(link_root, "cn"):
+            wc = wordcount.setdefault(event.eventid, {})
+            for story in event:
+                counter = convert_one(story)
+                if counter is not None:
+                    wc[story.f] = counter
+
+        # supplement catalog chapters (roguelike). Runs BEFORE the extra-avg
+        # pass so the RO1 five get catalog metadata; getExtraAvg then skips
+        # them as already converted.
+        from .story_supplement import build_supplement
+        from .story_normalize import speaker_resolver
+
+        shadow_root = candidate.parent / ".astr-normalized"
+        if shadow_root.exists():
+            shutil.rmtree(shadow_root)
+        char_table = _load_json(zh / "gamedata/excel/character_table.json", {})
+        resolve = speaker_resolver(char_table)
+        briefs = _meta_raw_briefs(zh)
+        catalog = build_supplement(zh)
+        for event in catalog["events"]:
+            wc = wordcount.setdefault(event["event_id"], {})
+            for ch in event["chapters"]:
+                jpath = zh / STORY_DIR / f"{ch['key']}.json"
+                if jpath.exists() and _supplement_metadata_drifted(jpath, event, ch):
+                    jpath.unlink()
+                story = _make_supplement_story(
+                    func, link_root, event, ch, zh, briefs, resolve, shadow_root
+                )
+                counter = convert_one(story)
+                if counter is not None:
+                    wc[ch["key"]] = counter
+
+        # extra avg (情报处理室 etc.)
+        try:
+            extra_list = []
+            for extra in func.getExtraAvg(link_root, "cn"):
+                counter = convert_one(extra)
+                if (zh / STORY_DIR / f"{extra.f}.json").exists():
+                    extra_list.append({"storyName": extra.storyName, "storyTxt": extra.f})
+            extrainfo["extra"] = extra_list
+        except Exception as e:
+            stats.failed.append({"story": "<extra-avg>", "error": f"{type(e).__name__}: {e}"})
+
+        (zh / "storyinfo.json").write_text(
+            json.dumps(storyinfo, ensure_ascii=False), encoding="utf-8"
+        )
+        (zh / "wordcount.json").write_text(
+            json.dumps(wordcount, ensure_ascii=False), encoding="utf-8"
+        )
+        (zh / "extrastory.json").write_text(
+            json.dumps(extrainfo, ensure_ascii=False), encoding="utf-8"
+        )
+        _regen_chardict(zh)
+
+        stats.converted.sort()
+        return stats
+    finally:
+        for fix in stats.case_fixed:
+            (zh / STORY_DIR / fix["expected"]).unlink()
