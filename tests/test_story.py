@@ -49,11 +49,17 @@ def _mk_story_tree(root: Path) -> None:
 
 def test_convert_stories_and_case_fix(tmp_path):
     _mk_story_tree(tmp_path)
+    source = tmp_path / "zh_CN/gamedata/story/obt/roguelike/ro1/level_rogue1_entry.txt"
+    original = source.read_bytes()
     stats = convert_stories(tmp_path, ASTR)
 
     assert stats.failed == []
     assert stats.missing_source == []
-    assert len(stats.case_fixed) == 1  # Obt/... symlink created
+    assert len(stats.case_fixed) == 1  # temporary Obt/... symlink used
+    alias = tmp_path / "zh_CN/gamedata/story" / stats.case_fixed[0]["expected"]
+    assert not alias.exists()
+    assert not alias.is_symlink()
+    assert source.read_bytes() == original
 
     zh = tmp_path / "zh_CN"
     main_json = zh / "gamedata/story/activities/act1side/level_act1side_01.json"
@@ -81,8 +87,42 @@ def test_convert_stories_and_case_fix(tmp_path):
 def test_convert_stories_idempotent(tmp_path):
     _mk_story_tree(tmp_path)
     convert_stories(tmp_path, ASTR)
+    before = {p: p.read_bytes() for p in (tmp_path / "zh_CN/gamedata/story").rglob("*.json")}
     stats = convert_stories(tmp_path, ASTR)
     assert stats.converted == []  # existing JSONs are not regenerated
+    assert {p: p.read_bytes() for p in before} == before
+    assert not any(p.is_symlink() for p in (tmp_path / "zh_CN").rglob("*"))
+
+
+@pytest.mark.parametrize("failure", ["parser", "enumeration"])
+def test_convert_stories_cleans_case_links_on_failure(tmp_path, monkeypatch, failure):
+    from akdp.story import _import_astr
+
+    _mk_story_tree(tmp_path)
+    story_dir = tmp_path / "zh_CN/gamedata/story"
+    source = story_dir / "obt/roguelike/ro1/level_rogue1_entry.txt"
+    original = source.read_bytes()
+    existing = story_dir / "existing.txt"
+    existing.symlink_to(source)
+    alias = story_dir / "Obt/Roguelike/RO1/level_rogue1_entry.txt"
+    func, jsonconvert = _import_astr(ASTR)
+
+    def fail(*args):
+        assert alias.is_symlink()
+        raise RuntimeError("conversion interrupted")
+
+    if failure == "parser":
+        monkeypatch.setattr(jsonconvert, "reader", fail)
+        assert convert_stories(tmp_path, ASTR).failed
+    else:
+        monkeypatch.setattr(func, "getEvents", fail)
+        with pytest.raises(RuntimeError, match="conversion interrupted"):
+            convert_stories(tmp_path, ASTR)
+
+    assert not alias.exists()
+    assert not alias.is_symlink()
+    assert source.read_bytes() == original
+    assert existing.is_symlink()
 
 
 def test_parse_version_id_from_tag():

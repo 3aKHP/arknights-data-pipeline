@@ -3,11 +3,13 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
+import zipfile
 import zlib
 
 import pytest
 
 from akdp import contract
+from akdp.package import package_candidate
 from akdp.sqlite_artifact import build_sqlite, validate_sqlite_descriptor
 
 
@@ -53,6 +55,39 @@ def test_sqlite_sidecar_uses_real_compiler_and_roundtrips_complete_fields(tmp_pa
             "SELECT count(*) FROM sources "
             "WHERE namespace='original' AND path='zh_CN/future-file.bin'"
         ).fetchone()[0] == 1
+
+
+def test_story_conversion_packages_without_temporary_case_aliases(tmp_path):
+    from akdp.story import convert_stories
+    from test_story import ASTR, _mk_rogue_tree
+
+    candidate = tmp_path / "candidate"
+    _input(candidate)
+    _mk_rogue_tree(candidate)
+    originals = {p.relative_to(candidate).as_posix(): p.read_bytes()
+                 for p in candidate.rglob("*.txt")}
+    stats = convert_stories(candidate, ASTR)
+    assert stats.case_fixed
+    assert not stats.failed
+
+    dist = tmp_path / "dist"
+    manifest = package_candidate(candidate, dist, source_info={"versionId": "story-fixture"})
+    assets = {contract.EXCEL_ASSET, contract.LEVELS_ASSET, contract.STORY_ASSET,
+              contract.SQLITE_ASSET}
+    assert set(manifest["assets"]) == assets
+    assert assets | {contract.MANIFEST_ASSET} <= {p.name for p in dist.iterdir()}
+    validate_sqlite_descriptor(manifest)
+    with zipfile.ZipFile(dist / contract.STORY_ASSET) as archive:
+        for key in stats.converted:
+            assert f"zh_CN/gamedata/story/{key}.json" in archive.namelist()
+    with sqlite3.connect(dist / contract.SQLITE_DATABASE) as db:
+        archived = {
+            path: zlib.decompress(body) for path, body in db.execute(
+                "SELECT s.path,b.body FROM sources s JOIN source_blobs b USING(sha256) "
+                "WHERE s.namespace='original' AND s.path LIKE '%.txt'"
+            )
+        }
+    assert archived == originals
 
 
 @pytest.mark.parametrize("source_info", [
