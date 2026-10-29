@@ -115,7 +115,7 @@ uv run akdp --workdir <repair-workdir> publish --revision 2 --execute
 真正的发布 delta。该资产不属于 PRTS-MCP 的公开 `index.json` 契约；旧 Release 尚无
 此资产、状态不兼容或版本不匹配时，工作流会安全回退到一次全量图片构建。
 
-图片 baseline 的长期轮换计划见 [`docs/image-baseline-lifecycle-preliminary-memo.md`](docs/image-baseline-lifecycle-preliminary-memo.md)。该文档是初步评估备忘，仅供后续专项调研参考，不构成对节奏、schema、迁移方案、实现范围或交付时间的承诺与决策。实际方案将在 2026「感谢庆典」前瞻直播前冻结，届时以冻结文档为准。
+图片 baseline 本轮按[2026「感谢庆典」窗口临时裁决](docs/image-baseline-interim-decision-2026-celebration.md)执行：感谢庆典不重切，沿用现有 baseline 与普通 delta；首个 re-baseline 候选窗口顺延至 2027 农历新年，完整生命周期方案在下一候选窗口前形成。[初步评估备忘](docs/image-baseline-lifecycle-preliminary-memo.md)继续保留为评估素材。
 
 ## 本地使用
 
