@@ -224,3 +224,27 @@ Phase D 的图片发布逻辑**不得**使用无 tag 的 `gh release view` / Git
 
 现有 `check.latest_published_version()` 已通过 tag 正则
 `(?:data|upstream|gamedata)-...` 限定前缀，不受 `images-*` tag 干扰。
+
+## 7. v2 多分片契约（显式启用）
+
+`akdp-images/v1` 保持原有含义。产品化代码支持显式选择 `akdp-images/v2`，正常生产仍发布 v1；软件合入不会自动切换生产协议。v2 使用独立命名空间：`images2-baseline-<versionId>` 保存 baseline 分片与索引，`images2-<versionId>` 保存版本索引、delta 分片及可选的 `images-build-state.json`。图片发布不设置 GitHub Latest。
+
+v2 保留全量 `artworks` 及其变体文件、尺寸、字节数与 SHA-256 字段，以以下字段取代 v1 的字符串 `shards` 映射：
+
+| 字段 | 含义 |
+| --- | --- |
+| `schemaVersion` | 固定为 `akdp-images/v2`。 |
+| `baselineVersion` / `currentVersion` | 当前 baseline 与该版本的数据身份。按数据版本排序，不按 Release 创建时间排序。 |
+| `previousVersion` | baseline 索引为 `null`；后续版本为同 baseline 下直接前驱，满足 `baselineVersion <= previousVersion < currentVersion`。 |
+| `baselineParts` | baseline 的不可变物理分片数组，同一 baseline 期间逐版本原样保留。 |
+| `deltaParts` | 该版本新增或变更文件的物理分片数组；baseline 和空增量为 `[]`。 |
+
+每个物理分片包含 `file`、`bytes`、`sha256`、`group` 与 `members`。`group` 为逻辑类别和变体组成的键，如 `chararts-large`。`members` 按 PNG 文件名映射到 `{bytes, sha256, group}`，成员组与分片组一致。资产名与成员名均为不含路径分隔符的文件名，长度与摘要描述实际 ZIP 和 PNG 字节。每个版本内的物理分片名和成员名不能重复。
+
+打包按逻辑组和文件名确定性排序，目标 1 GiB，再以实际 ZIP 大小继续拆分。单个资产必须小于 2 GiB；打包预算为索引、构建状态及后续签名预留位置，超限在发布前失败。分片数量随输入增长，不使用固定槽位表。正常 v2 构建按上游版本的季度轮换 baseline，也可显式请求完整 re-baseline。
+
+baseline 全部校验完成并公开后，才公开引用它的哨兵版本或后续版本。delta 的 baseline 与前驱须已公开且血缘匹配。重跑会核对远端资产；只修复 draft 的未完成上传，不覆盖已公开内容。只有成功发布后才推进生产者本地前驱索引与构建状态。
+
+消费者按所需变体选择分片，并验证 ZIP、成员和最终目标文件；完整验收后原子切换代际。`artworks` 是当前版本的完整集合，删除以该集合为准，不依赖额外删除清单。构建状态是生产者的增量提取信息，不是消费者读取索引的前置条件。SHA-256 校验不等同于发布者认证，签名另行交付。
+
+生产 v2 首次激活计划与 2027 春节候选 re-baseline 窗口结合，以签名、受支持客户端发布和激活验收为前提。切换后停更 v1 图片通道并保留历史包，不长期双发布；未升级消费者不会自动获得 v2 支持。具体最低版本和切换日期在激活前公告。
