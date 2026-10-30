@@ -500,6 +500,8 @@ def cmd_images_package(args: argparse.Namespace) -> int:
             args.workdir / "images-out", raw, candidate_dist,
             previous, getattr(args, "part_target_bytes", 1024**3),
         )
+        if previous is not None:
+            images_parts.atomic_json(candidate_dist / "previous-index.json", previous)
         state = args.workdir / "images-dist" / BUILD_STATE_ASSET
         if state.exists():
             build_state = load_build_state(state)
@@ -566,7 +568,9 @@ def cmd_images_publish(args: argparse.Namespace) -> int:
 
     if manifest.get("schemaVersion") == "akdp-images/v2":
         from .images_publish_v2 import publish
-        previous_path = args.workdir / "images-prev" / "index.json"
+        previous_path = dist_dir / "previous-index.json"
+        if not previous_path.exists():
+            previous_path = args.workdir / "images-prev" / "index.json"
         previous = json.loads(previous_path.read_text()) if previous_path.exists() else None
         if manifest["baselineVersion"] == version_id:
             previous = None

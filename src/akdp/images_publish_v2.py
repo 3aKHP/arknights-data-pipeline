@@ -86,12 +86,14 @@ def _dependencies(github, index, previous):
             or base_index.get("baselineParts") != index["baselineParts"]
             or github.index(predecessor) != previous):
         raise ValueError("published dependency differs from candidate lineage")
-    assets = github.assets(baseline)
-    for part in index["baselineParts"]:
-        asset = assets.get(part["file"], {})
-        if (asset.get("state") != "uploaded" or asset.get("size") != part["bytes"]
-                or asset.get("digest") != "sha256:" + part["sha256"]):
-            raise ValueError("published baseline part differs or is missing")
+    for release, parts in [(baseline, index["baselineParts"]),
+                           (predecessor, previous["deltaParts"])]:
+        assets = github.assets(release)
+        for part in parts:
+            asset = assets.get(part["file"], {})
+            if (asset.get("state") != "uploaded" or asset.get("size") != part["bytes"]
+                    or asset.get("digest") != "sha256:" + part["sha256"]):
+                raise ValueError("published dependency part differs or is missing")
 
 
 def publish(dist: Path, repo: str, previous=None, *, dry_run=True, github=None):

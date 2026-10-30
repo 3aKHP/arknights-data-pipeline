@@ -167,3 +167,40 @@ def test_cli_advances_previous_only_after_success(tmp_path, monkeypatch):
     monkeypatch.setattr(images_publish_v2, 'publish', lambda *a, **k: [])
     cli.cmd_images_publish(args)
     assert json.loads((tmp_path / 'images-prev/index.json').read_text())['currentVersion'] == '26-10-01'
+
+
+def test_missing_predecessor_delta_blocks_next_publication(tmp_path):
+    base_dist, baseline = candidate(tmp_path)
+    delta_dist, delta = candidate(tmp_path, '26-10-02', baseline, b'changed')
+    next_dist, _ = candidate(tmp_path, '26-10-03', delta, b'newer')
+    gh = FakeGitHub()
+    publish(base_dist, 'owner/repo', dry_run=False, github=gh)
+    publish(delta_dist, 'owner/repo', baseline, dry_run=False, github=gh)
+    predecessor = next(item for item in gh.items if item['tag_name'] == 'images2-26-10-02')
+    gh.payloads[predecessor['id']].pop(delta['deltaParts'][0]['file'])
+    with pytest.raises(ValueError, match='dependency part'):
+        publish(next_dist, 'owner/repo', delta, dry_run=False, github=gh)
+    assert len(gh.items) == 3
+
+
+def test_cli_delta_republish_keeps_its_original_predecessor(tmp_path, monkeypatch):
+    import argparse
+    from akdp import cli, images_publish_v2
+    images = tmp_path / 'images-out'
+    images.mkdir()
+    cache = tmp_path / 'images-cache'
+    cache.mkdir()
+    args = argparse.Namespace(workdir=tmp_path, image_format='v2', rebaseline=False,
+                              part_target_bytes=700, execute=True, image_repo='owner/repo')
+    gh = FakeGitHub()
+    original = images_publish_v2.publish
+    monkeypatch.setattr(images_publish_v2, 'publish', lambda dist, repo, previous, **kw:
+                        original(dist, repo, previous, github=gh, **kw))
+    for version in ['26-10-01', '26-10-02']:
+        (images / 'index.json').write_text(json.dumps({'currentVersion': version, 'artworks': {}}))
+        (cache / 'hashes.json').write_text(json.dumps({'versionId': version}))
+        cli.cmd_images_package(args)
+        cli.cmd_images_publish(args)
+    uploads = list(gh.uploads)
+    cli.cmd_images_publish(args)
+    assert uploads == gh.uploads
