@@ -239,7 +239,7 @@ v2 保留全量 `artworks` 及其变体文件、尺寸、字节数与 SHA-256 �
 | `baselineParts` | baseline 的不可变物理分片数组，同一 baseline 期间逐版本原样保留。 |
 | `deltaParts` | 该版本新增或变更文件的物理分片数组；baseline 和空增量为 `[]`。 |
 
-每个物理分片包含 `file`、`bytes`、`sha256`、`group` 与 `members`。`group` 为逻辑类别和变体组成的键，如 `chararts-large`。`members` 按 PNG 文件名映射到 `{bytes, sha256, group}`，成员组与分片组一致。资产名与成员名均为不含路径分隔符的文件名，长度与摘要描述实际 ZIP 和 PNG 字节。每个版本内的物理分片名和成员名不能重复。
+每个物理分片包含 `file`、`bytes`、`sha256`、`group` 与 `members`。`group` 为逻辑类别和变体组成的键，如 `chararts-large`。`members` 按 PNG 文件名映射到 `{bytes, sha256, group}`，成员组与分片组一致。资产名与成员名均为不含路径分隔符的文件名，长度与摘要描述实际 ZIP 和 PNG 字节。每组 `baselineParts` 或 `deltaParts` 内的物理分片名和成员名不能重复；delta 可以覆盖 baseline 中的同名成员。
 
 打包按逻辑组和文件名确定性排序，目标 1 GiB，再以实际 ZIP 大小继续拆分。单个资产必须小于 2 GiB；打包预算为索引、构建状态及后续签名预留位置，超限在发布前失败。分片数量随输入增长，不使用固定槽位表。正常 v2 构建按上游版本的季度轮换 baseline，也可显式请求完整 re-baseline。
 
