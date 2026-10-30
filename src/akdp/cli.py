@@ -251,6 +251,20 @@ def cmd_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+def _image_baseline_needed(args, previous, version):
+    if getattr(args, "image_format", "v1") != "v2":
+        return previous is None
+    if getattr(args, "rebaseline", False) or not previous or previous.get("schemaVersion") != "akdp-images/v2":
+        return True
+    def quarter(value):
+        import re
+        match = re.match(r"^(\d{2,4})-(\d{2})-", value)
+        if not match or not 1 <= int(match[2]) <= 12:
+            raise ValueError("image version must start with a valid year-month-date")
+        return int(match[1]), (int(match[2]) - 1) // 3
+    return quarter(previous["baselineVersion"]) != quarter(version)
+
+
 def cmd_images_fetch(args: argparse.Namespace) -> int:
     from . import images_fetch
     from .images_extract import _load_skin_ids
@@ -269,8 +283,12 @@ def cmd_images_fetch(args: argparse.Namespace) -> int:
     if excel_dir is not None and excel_dir.is_dir():
         valid_skin_ids = _load_skin_ids(excel_dir)
 
+    rebaseline = False
+    if getattr(args, "image_format", "v1") == "v2":
+        remote = check_mod.fetch_remote_version(args.server)
+        rebaseline = _image_baseline_needed(args, previous_index, remote["versionId"])
     incremental = bool(
-        previous_state
+        not rebaseline and previous_state
         and valid_skin_ids
         and state_matches_previous_index(previous_state, previous_index)
     )
@@ -325,8 +343,11 @@ def cmd_images_extract(args: argparse.Namespace) -> int:
     if plan_path.exists():
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
         bundle_paths = set(plan.get("downloadedBundles", []))
+    output = args.workdir / "images-out"
+    # extract_images clears old PNGs; also discard the previous derived index.
+    (output / "index.json").unlink(missing_ok=True)
     stats = images_extract.extract_images(
-        args.workdir / "images-cache", args.workdir / "images-out", excel, bundle_paths,
+        args.workdir / "images-cache", output, excel, bundle_paths,
     )
     (args.workdir / "images-extract.json").write_text(
         json.dumps(stats.to_dict(), ensure_ascii=False, indent=2) + "\n",
@@ -466,6 +487,30 @@ def cmd_images_package(args: argparse.Namespace) -> int:
             valid_skin_ids=valid_skin_ids,
         )
         write_build_state(args.workdir / "images-dist" / BUILD_STATE_ASSET, next_state)
+    if getattr(args, "image_format", "v1") == "v2":
+        from . import images_parts
+        previous = json.loads(prev_index.read_text()) if prev_index.exists() else None
+        if _image_baseline_needed(args, previous, version_id):
+            previous = None
+        raw = json.loads(index_path.read_text())
+        raw["currentVersion"] = version_id
+        # Each candidate has its own directory so persistent workdirs can advance versions.
+        candidate_dist = args.workdir / "images-dist" / images_parts.flat(version_id)
+        final_index = images_parts.package(
+            args.workdir / "images-out", raw, candidate_dist,
+            previous, getattr(args, "part_target_bytes", 1024**3),
+        )
+        state = args.workdir / "images-dist" / BUILD_STATE_ASSET
+        if state.exists():
+            build_state = load_build_state(state)
+            if build_state is None or not state_matches_previous_index(build_state, final_index):
+                raise ValueError("candidate build state does not match packaged version")
+            shutil.copy2(state, candidate_dist / BUILD_STATE_ASSET)
+        parts = final_index["deltaParts"] if previous else final_index["baselineParts"]
+        summary = {"imageFormat": "v2", "versionId": version_id, "mode": "delta" if previous else "baseline", "baselineVersion": final_index["baselineVersion"], "delta": {"empty": not parts}, "parts": len(parts), "totalBytes": sum(part["bytes"] for part in parts)}
+        (args.workdir / "images-package.json").write_text(json.dumps(summary, indent=2) + "\n")
+        print(f"images-package: v2 {summary['mode']}, {len(parts)} parts")
+        return 0
     final_index, stats = images_package.package_images(
         args.workdir / "images-out",
         args.workdir / "images-dist",
@@ -490,13 +535,21 @@ def cmd_images_package(args: argparse.Namespace) -> int:
 def cmd_images_publish(args: argparse.Namespace) -> int:
     from . import images_publish
 
-    dist_index = args.workdir / "images-dist" / "index.json"
+    pkg_file = args.workdir / "images-package.json"
+    pkg = json.loads(pkg_file.read_text()) if pkg_file.exists() else {}
+    dist_dir = args.workdir / "images-dist"
+    if pkg.get("imageFormat") == "v2":
+        from .images_parts import flat
+        dist_dir = dist_dir / flat(pkg["versionId"])
+    dist_index = dist_dir / "index.json"
     if not dist_index.exists():
         print("[images-publish] images-dist/index.json not found; run images-package first", file=sys.stderr)
         return 1
 
     # Read authoritative version from the packaged index, not hashes.json.
     manifest = json.loads(dist_index.read_text(encoding="utf-8"))
+    if manifest.get("schemaVersion") == "akdp-images/v2":
+        raise ValueError("v2 publishing requires the v2 release publisher; refusing the v1 path")
     version_id = manifest.get("currentVersion", "")
     if not version_id:
         print("[images-publish] currentVersion missing from index.json", file=sys.stderr)
@@ -674,6 +727,9 @@ def main() -> int:
     p.set_defaults(func=cmd_publish)
 
     p = sub.add_parser("images-fetch", help="download changed chararts/skinpack AB bundles")
+    p.add_argument("--image-format", choices=("v1", "v2"), default="v1")
+    p.add_argument("--rebaseline", action="store_true", help="rebuild complete baseline (v2 only)")
+    p.add_argument("--part-target-bytes", type=int, default=1024**3)
     p.add_argument("--excel-dir", type=Path,
                    help="optional gamedata/excel path for durable incremental planning")
     p.set_defaults(func=cmd_images_fetch)
@@ -692,6 +748,9 @@ def main() -> int:
     p.set_defaults(func=cmd_images_variants)
 
     p = sub.add_parser("images-package", help="package baseline/delta zips + final index")
+    p.add_argument("--image-format", choices=("v1", "v2"), default="v1")
+    p.add_argument("--rebaseline", action="store_true", help="rebuild complete baseline (v2 only)")
+    p.add_argument("--part-target-bytes", type=int, default=1024**3)
     p.set_defaults(func=cmd_images_package)
 
     p = sub.add_parser("images-publish", help="publish image releases (dry-run by default)")
@@ -699,6 +758,9 @@ def main() -> int:
     p.set_defaults(func=cmd_images_publish)
 
     p = sub.add_parser("images-run", help="full image pipeline: fetch → extract → index → variants → package → publish")
+    p.add_argument("--image-format", choices=("v1", "v2"), default="v1")
+    p.add_argument("--rebaseline", action="store_true", help="rebuild complete baseline (v2 only)")
+    p.add_argument("--part-target-bytes", type=int, default=1024**3)
     p.add_argument("--force", action="store_true", help="run even if versionId is unchanged")
     p.add_argument("--publish", action="store_true", help="auto-publish after successful run")
     p.add_argument("--excel-dir", type=Path, required=True,

@@ -162,3 +162,9 @@ work/
 - **数据**：本仓库 Release 分发的游戏数据版权归上海鹰角网络科技有限公司（Hypergryph）及/或其关联方所有，未获得开源授权，仅供非商业的同人创作与学习交流。本仓库与鹰角网络无任何关联、未获授权或赞助。
 
 完整声明（含权利人撤下渠道）见 [NOTICE](NOTICE)。
+
+### v2 图片分片准备
+
+`images-fetch`、`images-package`、`images-run` 可显式传入 `--image-format v2`，默认仍使用 v1。v2 的 baseline 和 delta 共用确定性分片，目标大小为 1 GiB，按实际 ZIP 大小继续拆分；资产数量为索引、构建状态与签名预留位置。单成员无法满足 GitHub 单资产大小限制或资产数量超限时停止打包。`--part-target-bytes` 可调整目标大小，`--rebaseline` 可显式要求完整基线；正常 v2 构建按上游版本的季度轮换 baseline。候选包按版本放在 `images-dist/<versionId>/`，同一候选可校验重跑。
+
+本次提交只准备打包能力，v2 候选会拒绝进入 v1 发布器；生产工作流继续使用现有 v1 通道。v2 发布器与正式激活分别验收。
