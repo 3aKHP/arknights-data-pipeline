@@ -40,10 +40,12 @@ def fetch_remote_version(server: str = "cn") -> dict:
             await session.session.close()
 
     data = asyncio.run(_go())
+    from .provenance import source_identity
     return {
         "versionId": data.get("versionId"),
         "manifestVersion": data.get("manifestVersion"),
         "abCount": len(data.get("abInfos") or []),
+        **source_identity(data),
     }
 
 

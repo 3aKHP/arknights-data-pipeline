@@ -189,7 +189,9 @@ async def _run_fetch(
         if pruned:
             _logger.info("images-fetch: pruned %d stale cache files", pruned)
 
-        return stats, {"versionId": version_id, "hashes": all_hashes}
+        from .provenance import source_identity
+        return stats, {"versionId": version_id, "hashes": all_hashes,
+                       **source_identity(hot_update)}
     finally:
         await session.session.close()
 

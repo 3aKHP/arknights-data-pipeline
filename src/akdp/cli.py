@@ -133,8 +133,13 @@ def cmd_merge(args: argparse.Namespace) -> int:
 
 def cmd_check(args: argparse.Namespace) -> int:
     remote = check_mod.fetch_remote_version(args.server)
+    from . import provenance
+    status, event = provenance.inspect_remote(remote, check_mod.DIST_REPO)
+    provenance.report(status, event, args.workdir)
+    if status == "content_drift":
+        return 1
     published = check_mod.latest_published_version()
-    changed = check_mod.version_changed(remote["versionId"], published)
+    changed = status == "new_version"
     print(f"remote versionId:    {remote['versionId']} (manifest {remote['manifestVersion']})")
     print(f"published versionId: {published}")
     print("CHANGED" if changed else "UNCHANGED")
@@ -539,8 +544,18 @@ def _run_pipeline(
     log_prefix: str,
 ) -> int:
     """Shared orchestration for JSON and image pipelines."""
+    from . import provenance
+
+    remote = check_mod.fetch_remote_version(args.server)
+    status, event = provenance.inspect_remote(remote, check_mod.DIST_REPO)
+    provenance.report(status, event, args.workdir)
+    if status == "content_drift":
+        print(f"[{log_prefix}] same-version content drift; use the datarev repair SOP", file=sys.stderr)
+        return 1
     if not args.force:
-        remote = check_mod.fetch_remote_version(args.server)
+        if log_prefix == "run" and status in ("unchanged", "baseline_unknown"):
+            print(f"[{log_prefix}] same published version; nothing to do")
+            return 0
         published = published_fn()
         if not check_mod.version_changed(
             remote["versionId"], published, force=args.force,
@@ -554,6 +569,15 @@ def _run_pipeline(
             print(f"[{log_prefix}] step {cmd.__name__} failed, stopping (fail-closed)", file=sys.stderr)
             return rc
     if getattr(args, "publish", False):
+        if log_prefix == "images-run":
+            built = json.loads((args.workdir / "images-cache" / "hashes.json").read_text())
+        else:
+            built = json.loads((args.workdir / "merge.json").read_text())["source"]
+        built_status, built_event = provenance.inspect_remote(built, check_mod.DIST_REPO)
+        provenance.report(built_status, built_event, args.workdir)
+        if built_status == "content_drift":
+            print(f"[{log_prefix}] build input drifted; publication stopped", file=sys.stderr)
+            return 1
         print(f"[{log_prefix}] auto-publishing")
         args.execute = True
         return publish_fn(args)
