@@ -25,7 +25,7 @@ SQLite 旁路由 PRTS-MCP 的 Rust 构建工具生成，完整保留候选树原
 
 CI 和数据管线默认固定 PRTS-MCP 编译器提交 `4d71009b24c4ff1a5c8916253a85896cc1e2a750`；可通过 PRTS_DATA_COMPILER_REF 仓库变量或 workflow_dispatch 的 compiler_ref 覆盖。正式启用前须完成该编译器提交的审查，先发出带 DB 的向前 revision，再启用消费者的 SQLite 后端。常规版本变更检测仍接受已有四资产 Release，不会因缺少 DB 自动重写历史公开版本。
 
-同版本上游清单的内容指纹发生变化时，自动流水线停止发布并报告 `content_drift`，`--force` 也不能绕过。新构建的 `manifest.source` 记录实际构建清单的指纹；历史包缺少指纹时报告 `baseline_unknown`，直到后续正常发布建立基准。修复继续走人工 datarev 流程。漂移事件通过现有 ledger 端点上传，手机推送由接收端另外实现。
+同版本上游清单的内容指纹发生变化时，自动流水线停止发布并报告 `content_drift`，`--force` 也不能绕过。新构建的 `manifest.source` 记录实际构建清单的指纹；历史包缺少指纹时报告 `baseline_unknown`，直到后续正常发布建立基准。来源字段为 `manifest.source.fingerprintAlgorithm=akdp-hot-update-fingerprint/v1` 与 `contentFingerprint`：按 bundle 名称排序规范化 `(name, hash, md5)` 列表后取完整 SHA-256；记录重排不会改变指纹。修复继续走人工 datarev 流程。漂移事件通过现有 ledger 端点上传，手机推送由接收端另外实现。
 
 ## 流水线
 
