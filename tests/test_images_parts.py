@@ -94,9 +94,8 @@ def test_cli_v2_packaging_and_quarterly_rotation(tmp_path):
     assert cli._image_baseline_needed(args, baseline, '27-01-01')
     args.rebaseline = True
     assert cli._image_baseline_needed(args, baseline, '26-10-02')
-    args.execute = True
-    with __import__('pytest').raises(ValueError, match='refusing the v1 path'):
-        cli.cmd_images_publish(args)
+    args.execute = False
+    assert cli.cmd_images_publish(args) == 0
 
 
 def test_asset_limit_reserves_build_state_and_signature(tmp_path, monkeypatch):

@@ -548,8 +548,6 @@ def cmd_images_publish(args: argparse.Namespace) -> int:
 
     # Read authoritative version from the packaged index, not hashes.json.
     manifest = json.loads(dist_index.read_text(encoding="utf-8"))
-    if manifest.get("schemaVersion") == "akdp-images/v2":
-        raise ValueError("v2 publishing requires the v2 release publisher; refusing the v1 path")
     version_id = manifest.get("currentVersion", "")
     if not version_id:
         print("[images-publish] currentVersion missing from index.json", file=sys.stderr)
@@ -566,23 +564,28 @@ def cmd_images_publish(args: argparse.Namespace) -> int:
         print(f"[images-publish] unknown mode: {mode}", file=sys.stderr)
         return 1
 
-    images_publish.publish_images(
-        args.workdir / "images-dist",
-        version_id=version_id,
-        mode=mode,
-        dry_run=not args.execute,
-        delta_empty=delta_empty,
-    )
+    if manifest.get("schemaVersion") == "akdp-images/v2":
+        from .images_publish_v2 import publish
+        previous_path = args.workdir / "images-prev" / "index.json"
+        previous = json.loads(previous_path.read_text()) if previous_path.exists() else None
+        if manifest["baselineVersion"] == version_id:
+            previous = None
+        publish(dist_dir, getattr(args, "image_repo", check_mod.DIST_REPO), previous, dry_run=not args.execute)
+    else:
+        images_publish.publish_images(
+            dist_dir, version_id=version_id, mode=mode,
+            dry_run=not args.execute, delta_empty=delta_empty,
+        )
 
     if args.execute:
         # Advance prev index on successful publish.
         prev_dir = args.workdir / "images-prev"
         prev_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(
-            args.workdir / "images-dist" / "index.json",
+            dist_dir / "index.json",
             prev_dir / "index.json",
         )
-        state_path = args.workdir / "images-dist" / BUILD_STATE_ASSET
+        state_path = dist_dir / BUILD_STATE_ASSET
         if state_path.exists():
             shutil.copy2(state_path, prev_dir / BUILD_STATE_ASSET)
         print("[images-publish] prev index advanced")
@@ -643,7 +646,7 @@ def cmd_images_run(args: argparse.Namespace) -> int:
         args,
         (cmd_images_fetch, cmd_images_extract, cmd_images_index,
          cmd_images_variants, cmd_images_package),
-        check_mod.latest_published_image_version,
+        lambda: check_mod.latest_published_image_version(image_format=getattr(args, "image_format", "v1"), repo=getattr(args, "image_repo", check_mod.DIST_REPO)),
         cmd_images_publish,
         "images-run",
     )
@@ -651,9 +654,11 @@ def cmd_images_run(args: argparse.Namespace) -> int:
 
 def cmd_images_latest_tag(args: argparse.Namespace) -> int:
     """Print the latest published image delta tag (empty if none)."""
-    version = check_mod.latest_published_image_version()
+    image_format = getattr(args, "image_format", "v1")
+    version = check_mod.latest_published_image_version(image_format=image_format, repo=getattr(args, "image_repo", check_mod.DIST_REPO))
     if version:
-        print(f"images-{version}")
+        prefix = "images2-" if image_format == "v2" else "images-"
+        print(prefix + version)
     else:
         print("")
     return 0
@@ -754,10 +759,12 @@ def main() -> int:
     p.set_defaults(func=cmd_images_package)
 
     p = sub.add_parser("images-publish", help="publish image releases (dry-run by default)")
+    p.add_argument("--image-repo", default=check_mod.DIST_REPO)
     p.add_argument("--execute", action="store_true", help="actually create GitHub releases")
     p.set_defaults(func=cmd_images_publish)
 
     p = sub.add_parser("images-run", help="full image pipeline: fetch → extract → index → variants → package → publish")
+    p.add_argument("--image-repo", default=check_mod.DIST_REPO)
     p.add_argument("--image-format", choices=("v1", "v2"), default="v1")
     p.add_argument("--rebaseline", action="store_true", help="rebuild complete baseline (v2 only)")
     p.add_argument("--part-target-bytes", type=int, default=1024**3)
@@ -768,6 +775,8 @@ def main() -> int:
     p.set_defaults(func=cmd_images_run)
 
     p = sub.add_parser("images-latest-tag", help="print latest published image delta tag")
+    p.add_argument("--image-format", choices=("v1", "v2"), default="v1")
+    p.add_argument("--image-repo", default=check_mod.DIST_REPO)
     p.set_defaults(func=cmd_images_latest_tag)
 
     p = sub.add_parser("run", help="check -> baseline -> fetch -> merge -> story -> summarize -> validate -> package")

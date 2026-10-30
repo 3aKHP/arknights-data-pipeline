@@ -167,4 +167,6 @@ work/
 
 `images-fetch`、`images-package`、`images-run` 可显式传入 `--image-format v2`，默认仍使用 v1。v2 的 baseline 和 delta 共用确定性分片，目标大小为 1 GiB，按实际 ZIP 大小继续拆分；资产数量为索引、构建状态与签名预留位置。单成员无法满足 GitHub 单资产大小限制或资产数量超限时停止打包。`--part-target-bytes` 可调整目标大小，`--rebaseline` 可显式要求完整基线；正常 v2 构建按上游版本的季度轮换 baseline。候选包按版本放在 `images-dist/<versionId>/`，同一候选可校验重跑。
 
-本次提交只准备打包能力，v2 候选会拒绝进入 v1 发布器；生产工作流继续使用现有 v1 通道。v2 发布器与正式激活分别验收。
+v2 使用独立发布器，`images-publish --execute --image-repo owner/repo` 发布经过校验的版本候选。baseline 完整公开后才发布其哨兵版本；delta 要求 baseline 与前驱已公开且血缘匹配。失败重跑会复核已有资产，公开内容不覆盖，只有成功后才推进本地前驱索引与构建状态。`images-latest-tag --image-format v2 --image-repo owner/repo` 按版本寻找完整 v2 发布。
+
+手工工作流 `Images v2 candidate` 仅允许在 fork 执行，输入匹配游戏版本的数据 Release tag，默认只构建；显式选择 publish 才发布到该 fork。该工作流会下载真实美术 AB，属于大流量任务，应在网络和空间允许时运行。正常生产定时流程仍为 v1，v2 正式激活另行安排。

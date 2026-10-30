@@ -1,0 +1,73 @@
+name: Images v2 candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      data_tag:
+        description: "Official data release containing the matching excel tables"
+        required: true
+        type: string
+      publish:
+        description: "Publish verified v2 releases to this fork"
+        default: false
+        type: boolean
+      rebaseline:
+        description: "Force a full v2 baseline"
+        default: false
+        type: boolean
+
+concurrency:
+  group: images-v2-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    # Production activation is separate. This manual entry only targets forks.
+    if: github.repository != '3aKHP/arknights-data-pipeline'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      IMAGE_REPO: ${{ github.repository }}
+      DATA_TAG: ${{ inputs.data_tag }}
+      PUBLISH: ${{ inputs.publish }}
+      REBASELINE: ${{ inputs.rebaseline }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Install development dependencies
+        run: |
+          pip install uv
+          uv sync --all-extras --locked
+      - name: Verify image packaging and publishing
+        run: uv run pytest tests/test_images_parts.py tests/test_images_publish_v2.py tests/test_images_state.py -q
+      - name: Prepare tables and previous v2 state
+        run: |
+          uv run python - <<'PYTHON'
+          import os
+          from akdp.check import fetch_remote_version, parse_release_tag
+          parsed = parse_release_tag(os.environ["DATA_TAG"])
+          if parsed is None or parsed[0] != fetch_remote_version()["versionId"]:
+              raise SystemExit("data_tag must match the current upstream version before downloading image bundles")
+          PYTHON
+          mkdir -p work/candidate work/images-prev
+          gh release download "$DATA_TAG" -R 3aKHP/arknights-data-pipeline -p zh_CN-excel.zip --output work/excel.zip
+          unzip -q work/excel.zip -d work/candidate
+          tag=$(uv run akdp images-latest-tag --image-format v2 --image-repo "$IMAGE_REPO")
+          if [ -n "$tag" ]; then
+            gh release download "$tag" -R "$IMAGE_REPO" -p index.json --output work/images-prev/index.json
+            if gh release view "$tag" -R "$IMAGE_REPO" --json assets --jq '.assets[].name' | grep -Fxq images-build-state.json; then
+              gh release download "$tag" -R "$IMAGE_REPO" -p images-build-state.json --output work/images-prev/images-build-state.json
+            fi
+          fi
+      - name: Build and optionally publish v2 candidate
+        run: |
+          args=(--workdir work images-run --image-format v2 --image-repo "$IMAGE_REPO" --excel-dir work/candidate/zh_CN/gamedata/excel)
+          if [ "$PUBLISH" = true ]; then args+=(--publish); fi
+          if [ "$REBASELINE" = true ]; then args+=(--rebaseline --force); fi
+          uv run akdp "${args[@]}"

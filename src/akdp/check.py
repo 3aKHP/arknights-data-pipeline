@@ -129,7 +129,7 @@ def _is_image_delta_tag(tag: str) -> bool:
     return tag.startswith("images-") and not tag.startswith("images-baseline-")
 
 
-def latest_published_image_version() -> str | None:
+def latest_published_image_version(*, image_format: str = "v1", repo: str = DIST_REPO) -> str | None:
     """Read the latest published image delta release version.
 
     Searches for ``images-<versionId>`` tags (excluding ``images-baseline-*``).
@@ -137,9 +137,10 @@ def latest_published_image_version() -> str | None:
     JSON pipeline's asset-completeness guard).  Returns the versionId, or None
     if no complete image delta Release exists yet.
     """
+    prefix = "images2-" if image_format == "v2" else "images-"
     # Step 1: find candidate tags (gh release list doesn't support 'assets').
     proc = subprocess.run(
-        ["gh", "release", "list", "-R", DIST_REPO,
+        ["gh", "release", "list", "-R", repo,
          "--json", "tagName,isDraft", "--limit", "200"],
         capture_output=True, text=True, check=False,
     )
@@ -151,12 +152,13 @@ def latest_published_image_version() -> str | None:
         return None
     candidates = [
         rel["tagName"] for rel in releases
-        if not rel.get("isDraft") and _is_image_delta_tag(rel.get("tagName", ""))
+        if not rel.get("isDraft") and (rel.get("tagName", "").startswith(prefix) and not rel.get("tagName", "").startswith(prefix + "baseline-"))
     ]
+    candidates.sort(key=lambda tag: tag.removeprefix(prefix), reverse=True)
     # Step 2: verify the first candidate has index.json asset.
     for tag in candidates:
         proc = subprocess.run(
-            ["gh", "release", "view", tag, "-R", DIST_REPO,
+            ["gh", "release", "view", tag, "-R", repo,
              "--json", "assets"],
             capture_output=True, text=True, check=False,
         )
@@ -168,5 +170,5 @@ def latest_published_image_version() -> str | None:
             continue
         names = {a.get("name") for a in data.get("assets", [])}
         if "index.json" in names:
-            return tag.removeprefix("images-")
+            return tag.removeprefix(prefix)
     return None
