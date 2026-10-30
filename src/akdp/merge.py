@@ -86,6 +86,8 @@ def merge_trees(baseline: Path, extraction: Path, candidate: Path) -> MergeStats
 
 def load_hot_update_version(extract_root: Path) -> dict:
     """Extract version info from arkprts' hot_update_list.json for the manifest."""
+    from .provenance import source_identity
+
     for hul in extract_root.rglob("hot_update_list.json"):
         try:
             data = json.loads(hul.read_text(encoding="utf-8"))
@@ -96,5 +98,6 @@ def load_hot_update_version(extract_root: Path) -> dict:
             "versionId": data.get("versionId"),
             "manifestVersion": data.get("manifestVersion"),
             "abCount": len(data.get("abInfos") or []),
+            **source_identity(data),
         }
     return {}

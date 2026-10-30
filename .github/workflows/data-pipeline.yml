@@ -134,3 +134,29 @@ jobs:
           args=(--workdir work images-run --publish --excel-dir work/candidate/zh_CN/gamedata/excel)
           if [[ "$FORCE_RUN" == "true" ]]; then args+=(--force); fi
           uv run akdp "${args[@]}"
+
+      - name: Upload pipeline drift events
+        if: ${{ always() && env.LEDGER_ENDPOINT_URL != '' }}
+        env:
+          LEDGER_ENDPOINT_TOKEN: ${{ secrets.LEDGER_ENDPOINT_TOKEN }}
+        run: |
+          if [ ! -s work/pipeline-events.jsonl ]; then
+            echo "No pipeline events this run; nothing to upload."
+            exit 0
+          fi
+          for i in 1 2 3; do
+            code=$(curl --fail-with-body -sS --connect-timeout 15 --max-time 120 -o /dev/null -w '%{http_code}' \
+              -X POST "$LEDGER_ENDPOINT_URL" \
+              -H "Authorization: Bearer $LEDGER_ENDPOINT_TOKEN" \
+              -H "Content-Type: application/x-ndjson" \
+              -H "X-AKDP-Run-ID: ${GITHUB_RUN_ID}" \
+              -H "X-AKDP-Repository: ${GITHUB_REPOSITORY}" \
+              -H "X-AKDP-Run-At: $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              -H "X-AKDP-Run-Attempt: ${GITHUB_RUN_ATTEMPT}" \
+              --data-binary @work/pipeline-events.jsonl) && [[ "$code" == 2?? ]] && exit 0
+            echo "Ledger upload attempt $i failed (HTTP $code); retrying..."
+            sleep $((i * 5))
+          done
+          echo "::error::Pipeline event upload failed after 3 attempts"
+          exit 1
+
