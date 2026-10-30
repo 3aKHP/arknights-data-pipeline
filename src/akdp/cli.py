@@ -344,10 +344,7 @@ def cmd_images_extract(args: argparse.Namespace) -> int:
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
         bundle_paths = set(plan.get("downloadedBundles", []))
     output = args.workdir / "images-out"
-    # The index must describe this extraction, not PNGs left by an earlier run.
-    for tier in ("original", "large", "preview"):
-        for old in output.glob(f"*.{tier}.png"):
-            old.unlink()
+    # extract_images clears old PNGs; also discard the previous derived index.
     (output / "index.json").unlink(missing_ok=True)
     stats = images_extract.extract_images(
         args.workdir / "images-cache", output, excel, bundle_paths,

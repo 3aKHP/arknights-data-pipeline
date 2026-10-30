@@ -159,7 +159,7 @@ def test_stale_build_state_is_not_attached_to_new_candidate(tmp_path):
         cli.cmd_images_package(args)
 
 
-def test_persistent_extraction_does_not_reindex_old_pngs(tmp_path, monkeypatch):
+def test_persistent_extraction_discards_previous_index(tmp_path, monkeypatch):
     import argparse
     from types import SimpleNamespace
     from akdp import cli, images_extract
@@ -172,7 +172,7 @@ def test_persistent_extraction_does_not_reindex_old_pngs(tmp_path, monkeypatch):
     excel = tmp_path / 'excel'
     excel.mkdir()
     def extract(cache, output, tables, bundles):
-        assert not list(output.glob('*.png'))
+        assert (output / 'old.original.png').exists()  # extractor owns PNG cleanup
         assert not (output / 'index.json').exists()
         assert (output / 'note.txt').read_text() == 'keep'
         return SimpleNamespace(failed=[], to_dict=lambda: dict(extracted=0, skipped_not_skin=0, failed=0, bundles_processed=0))
