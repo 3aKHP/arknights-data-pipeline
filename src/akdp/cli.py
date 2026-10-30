@@ -569,6 +569,15 @@ def _run_pipeline(
             print(f"[{log_prefix}] step {cmd.__name__} failed, stopping (fail-closed)", file=sys.stderr)
             return rc
     if getattr(args, "publish", False):
+        if log_prefix == "images-run":
+            built = json.loads((args.workdir / "images-cache" / "hashes.json").read_text())
+        else:
+            built = json.loads((args.workdir / "merge.json").read_text())["source"]
+        built_status, built_event = provenance.inspect_remote(built, check_mod.DIST_REPO)
+        provenance.report(built_status, built_event, args.workdir)
+        if built_status == "content_drift":
+            print(f"[{log_prefix}] build input drifted; publication stopped", file=sys.stderr)
+            return 1
         print(f"[{log_prefix}] auto-publishing")
         args.execute = True
         return publish_fn(args)

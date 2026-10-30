@@ -71,3 +71,21 @@ def test_remote_errors_propagate(monkeypatch):
     monkeypatch.setattr(provenance, "published_source", failed)
     with pytest.raises(RuntimeError):
         provenance.inspect_remote({"versionId": "V"}, "o/r")
+
+@pytest.mark.parametrize("pipeline", ["run", "images-run"])
+def test_build_time_drift_blocks_publication(tmp_path, monkeypatch, pipeline):
+    remote = {"versionId": "V", **provenance.source_identity(listing("a"))}
+    built = {"versionId": "V", **provenance.source_identity(listing("b"))}
+    monkeypatch.setattr(check, "fetch_remote_version", lambda _: remote)
+    monkeypatch.setattr(provenance, "published_source", lambda *a: ("data-V", remote))
+    def build(args):
+        if pipeline == "run":
+            (tmp_path / "merge.json").write_text(json.dumps({"source": built}))
+        else:
+            (tmp_path / "images-cache").mkdir()
+            (tmp_path / "images-cache" / "hashes.json").write_text(json.dumps(built))
+        return 0
+    def publish(*args):
+        pytest.fail("changed actual build input was published")
+    args = argparse.Namespace(force=True, server="cn", workdir=tmp_path, publish=True)
+    assert cli._run_pipeline(args, (build,), lambda: "V", publish, pipeline) == 1
