@@ -141,3 +141,40 @@ def test_cli_incremental_pack_needs_only_changed_pngs(tmp_path):
     current = json.loads((dist / 'index.json').read_text())
     assert current['baselineParts'] == baseline['baselineParts']
     assert verify(dist, baseline)['members'] == 1
+
+
+def test_stale_build_state_is_not_attached_to_new_candidate(tmp_path):
+    import argparse
+    import pytest
+    from akdp import cli
+    from akdp.images_state import BuildState, write_build_state
+    (tmp_path / 'images-out').mkdir()
+    (tmp_path / 'images-cache').mkdir()
+    (tmp_path / 'images-dist').mkdir()
+    (tmp_path / 'images-out/index.json').write_text(json.dumps({'currentVersion': '26-10-02', 'artworks': {}}))
+    (tmp_path / 'images-cache/hashes.json').write_text(json.dumps({'versionId': '26-10-02'}))
+    write_build_state(tmp_path / 'images-dist/images-build-state.json', BuildState('26-10-01', {}, {}, frozenset()))
+    args = argparse.Namespace(workdir=tmp_path, image_format='v2', rebaseline=False, part_target_bytes=700)
+    with pytest.raises(ValueError, match='build state'):
+        cli.cmd_images_package(args)
+
+
+def test_persistent_extraction_does_not_reindex_old_pngs(tmp_path, monkeypatch):
+    import argparse
+    from types import SimpleNamespace
+    from akdp import cli, images_extract
+    out = tmp_path / 'images-out'
+    out.mkdir()
+    (out / 'old.original.png').write_bytes(b'old')
+    (out / 'old.large.png').write_bytes(b'old')
+    (out / 'index.json').write_text('{}')
+    (out / 'note.txt').write_text('keep')
+    excel = tmp_path / 'excel'
+    excel.mkdir()
+    def extract(cache, output, tables, bundles):
+        assert not list(output.glob('*.png'))
+        assert not (output / 'index.json').exists()
+        assert (output / 'note.txt').read_text() == 'keep'
+        return SimpleNamespace(failed=[], to_dict=lambda: dict(extracted=0, skipped_not_skin=0, failed=0, bundles_processed=0))
+    monkeypatch.setattr(images_extract, 'extract_images', extract)
+    assert cli.cmd_images_extract(argparse.Namespace(workdir=tmp_path, excel_dir=excel)) == 0

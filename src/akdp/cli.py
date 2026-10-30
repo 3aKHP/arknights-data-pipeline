@@ -343,8 +343,14 @@ def cmd_images_extract(args: argparse.Namespace) -> int:
     if plan_path.exists():
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
         bundle_paths = set(plan.get("downloadedBundles", []))
+    output = args.workdir / "images-out"
+    # The index must describe this extraction, not PNGs left by an earlier run.
+    for tier in ("original", "large", "preview"):
+        for old in output.glob(f"*.{tier}.png"):
+            old.unlink()
+    (output / "index.json").unlink(missing_ok=True)
     stats = images_extract.extract_images(
-        args.workdir / "images-cache", args.workdir / "images-out", excel, bundle_paths,
+        args.workdir / "images-cache", output, excel, bundle_paths,
     )
     (args.workdir / "images-extract.json").write_text(
         json.dumps(stats.to_dict(), ensure_ascii=False, indent=2) + "\n",
@@ -499,6 +505,9 @@ def cmd_images_package(args: argparse.Namespace) -> int:
         )
         state = args.workdir / "images-dist" / BUILD_STATE_ASSET
         if state.exists():
+            build_state = load_build_state(state)
+            if build_state is None or not state_matches_previous_index(build_state, final_index):
+                raise ValueError("candidate build state does not match packaged version")
             shutil.copy2(state, candidate_dist / BUILD_STATE_ASSET)
         parts = final_index["deltaParts"] if previous else final_index["baselineParts"]
         summary = {"imageFormat": "v2", "versionId": version_id, "mode": "delta" if previous else "baseline", "baselineVersion": final_index["baselineVersion"], "delta": {"empty": not parts}, "parts": len(parts), "totalBytes": sum(part["bytes"] for part in parts)}
