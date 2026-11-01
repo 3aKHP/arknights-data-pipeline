@@ -232,6 +232,7 @@ def cmd_package(args: argparse.Namespace) -> int:
         revision=getattr(args, "revision", 1),
         llm_ledger=workdir / "llm-ledger.jsonl",
         sqlite_compiler=getattr(args, "sqlite_compiler", None),
+        baseline=workdir / "baseline",
     )
     for name, meta in manifest["assets"].items():
         print(f"packaged {name} ({meta['size'] / 1e6:.1f} MB, sha256 {meta['sha256'][:12]}…)")
@@ -248,6 +249,14 @@ def cmd_publish(args: argparse.Namespace) -> int:
         title_suffix=source_id, dry_run=not args.execute,
         revision=getattr(args, "revision", 1),
     )
+    return 0
+
+
+def cmd_release_notes(args: argparse.Namespace) -> int:
+    from .notes_refresh import refresh
+    results = refresh(args.tag, args.workdir / 'release-notes-refresh',
+                      repo=args.repo, execute=args.execute)
+    print(json.dumps(results, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -511,6 +520,9 @@ def cmd_images_package(args: argparse.Namespace) -> int:
         parts = final_index["deltaParts"] if previous else final_index["baselineParts"]
         summary = {"imageFormat": "v2", "versionId": version_id, "mode": "delta" if previous else "baseline", "baselineVersion": final_index["baselineVersion"], "delta": {"empty": not parts}, "parts": len(parts), "totalBytes": sum(part["bytes"] for part in parts)}
         (args.workdir / "images-package.json").write_text(json.dumps(summary, indent=2) + "\n")
+        from .release_notes import prepare_images
+        prepare_images(candidate_dist, final_index, previous, getattr(args, "excel_dir", None),
+                       repo=getattr(args, "image_repo", check_mod.DIST_REPO))
         print(f"images-package: v2 {summary['mode']}, {len(parts)} parts")
         return 0
     final_index, stats = images_package.package_images(
@@ -523,6 +535,10 @@ def cmd_images_package(args: argparse.Namespace) -> int:
         json.dumps(stats.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     d = stats.to_dict()
+    from .release_notes import prepare_images, read_json
+    prepare_images(args.workdir / "images-dist", final_index,
+                   read_json(prev_index) if prev_index.exists() else None,
+                   getattr(args, "excel_dir", None), repo=getattr(args, "image_repo", check_mod.DIST_REPO))
     if d["mode"] == "baseline":
         print(f"images-package: BASELINE {d['baselineVersion']} "
               f"({len(d['shards'])} shards, {d['totalBytes']/1e9:.2f} GB)")
@@ -691,6 +707,12 @@ def main() -> int:
     ap.add_argument("--workdir", type=Path, default=Path("work"))
     ap.add_argument("--server", default="cn")
     sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser('release-notes', help='preview or update descriptions of explicit published releases')
+    p.add_argument('--tag', action='append', required=True)
+    p.add_argument('--repo', default=check_mod.DIST_REPO)
+    p.add_argument('--execute', action='store_true', help='update titles and bodies only')
+    p.set_defaults(func=cmd_release_notes)
 
     p = sub.add_parser("baseline", help="download current releases as baseline")
     p.add_argument("--clobber", action="store_true")

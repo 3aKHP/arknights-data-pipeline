@@ -116,6 +116,7 @@ def package_candidate(
     revision: int = 1,
     llm_ledger: Path | None = None,
     sqlite_compiler: Path | str | None = None,
+    baseline: Path | None = None,
 ) -> dict:
     """Build the three LTS ZIPs, SQLite+gzip and the additive manifest.
 
@@ -181,4 +182,6 @@ def package_candidate(
     (dist / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+    from .release_notes import prepare_data
+    prepare_data(candidate, baseline, dist, manifest)
     return manifest

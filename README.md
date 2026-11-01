@@ -50,9 +50,31 @@ publish    data-* 单 Release 五 asset，发到工厂仓库自身（gh CLI）
 - `zh_CN.sqlite.gz` — 完整源 SQLite 与预编译查询索引
 - `manifest.json` — 契约版本、源版本、校验指标、所有资产摘要与 SQLite 描述符
 
-Release notes 同步内嵌 manifest，方便人工审计。manifest 还记录流水线 commit、
-ASTR/flatc 等转换器来源、归一化/排除政策以及每个包的大小和 SHA-256；消费端优先
-校验 manifest asset，旧 Release 没有该 asset 时保留兼容读取。
+Release notes 使用中文说明收录内容、附件用途和下载大小，完整构建与校验信息由
+`manifest.json` 附件提供。新增干员、时装、剧情活动和章节按基线与候选数据的稳定 ID
+比较；“新增收录”不代表游戏已经上线。没有可靠基准时省略增量结论。工具版本、
+路径修复和 LLM 账本信息不进入正文。消费端从 manifest 附件校验数据；历史普通
+Release 没有该附件时，按原有客户端兼容规则处理。
+
+图片说明区分完整基线、增量和基线配套索引。增量按 skinId 统计新增、文件变更和移出
+索引，三个尺寸不重复计数；基线按尺寸汇总下载量。同一组的多个 ZIP 分片需要下载齐全。
+v1 与 v2 使用相同说明结构，索引链接遵循各自协议。公开标题中的“基线索引”对应原
+sentinel 发布，tag 不变。说明由本地确定性规则生成，不额外调用 LLM。
+
+打包会生成本地 `release-notes-context.json` 和 Markdown 预览；上下文与对应 manifest
+或 index 的摘要绑定，不上传为公共附件。发布 dry-run 也生成预览，不写远端。
+同版本人工修订可在 `dist/repair-description.txt` 中填写原因及影响范围；该文件不上传。
+常规发布重跑只更新 draft 说明，已公开说明需显式整理：
+
+```bash
+# tag 可重复指定；默认只生成预览，并备份原始 Release 元数据
+uv run akdp --workdir work/notes-review release-notes --tag data-<versionId>
+# 核对预览后更新相同目标；仅修改标题与正文
+uv run akdp --workdir work/notes-review release-notes --tag data-<versionId> --execute
+```
+
+整理过程核对远端是否自预览后被修改，验证下载源的摘要，并在执行后复核附件、发布
+身份和 Latest。历史源不足时只展示可验证内容；无法校验的输入会停止整理。
 
 ### LLM 配置
 

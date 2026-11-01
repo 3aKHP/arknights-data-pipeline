@@ -26,12 +26,17 @@ class FakeGitHub:
     def assets(self, release):
         return copy.deepcopy(self.payloads[release['id']])
 
-    def create(self, tag):
+    def create(self, tag, title=None, body=None):
         ident = len(self.items) + 1
-        release = dict(id=ident, tag_name=f'untagged-{ident}', name=tag, draft=True, target_commitish='main')
+        release = dict(id=ident, tag_name=f'untagged-{ident}', name=title or tag, body=body or '', draft=True, target_commitish='main')
         self.items.append(release)
         self.payloads[ident] = {}
         return copy.deepcopy(release)
+
+    def describe(self, release, title, body):
+        actual = next(item for item in self.items if item['id'] == release['id'])
+        actual.update(name=title, body=body)
+        return copy.deepcopy(actual)
 
     def upload(self, release, path):
         if self.interrupt_upload:

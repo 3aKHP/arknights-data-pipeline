@@ -9,6 +9,7 @@ import subprocess
 from .images_index import _sha256
 from .images_parts import SCHEMA, atomic_json, verify
 from .images_state import BUILD_STATE_ASSET, load_build_state
+from .release_notes import image_title, load_context, render_image, write_preview
 
 
 class GitHub:
@@ -35,10 +36,14 @@ class GitHub:
         asset = self.assets(release)["index.json"]
         return self.json("-H", "Accept: application/octet-stream", f"repos/{self.repo}/releases/assets/{asset['id']}")
 
-    def create(self, tag):
+    def create(self, tag, title=None, body=None):
         return self.json("--method", "POST", f"repos/{self.repo}/releases", body={
-            "tag_name": tag, "name": tag, "draft": True, "make_latest": "false",
-            "body": "AKDP v2 image distribution."})
+            "tag_name": tag, "name": title or image_title(tag), "draft": True, "make_latest": "false",
+            "body": body or ""})
+
+    def describe(self, release, title, body):
+        return self.json("--method", "PATCH", f"repos/{self.repo}/releases/{release['id']}",
+                         body={"name": title, "body": body})
 
     def delete(self, asset):
         self.json("--method", "DELETE", f"repos/{self.repo}/releases/assets/{asset['id']}")
@@ -62,8 +67,9 @@ def _lock(dist):
 
 
 def _find(releases, tag):
+    names = {tag, image_title(tag), image_title(tag, index_only=True)}
     matches = [release for release in releases if release["tag_name"] == tag or (
-        release["draft"] and release.get("name") == tag and release["tag_name"].startswith("untagged-"))]
+        release["draft"] and release.get("name") in names and release["tag_name"].startswith("untagged-"))]
     if len(matches) > 1:
         raise ValueError(f"ambiguous release: {tag}")
     return matches[0] if matches else None
@@ -117,6 +123,12 @@ def publish(dist: Path, repo: str, previous=None, *, dry_run=True, github=None):
             ("images2-" + version, index["deltaParts"], extra)]
     if any(len(parts) + 1 + len(extras) > 999 for _, parts, extras in jobs):
         raise ValueError("release asset limit exceeded (signature slot reserved)")
+    descriptions = {}
+    for tag, parts, extras in jobs:
+        mode = "baseline" if tag.startswith("images2-baseline-") else "index" if baseline else "delta"
+        descriptions[tag] = render_image(index, mode, {p['file']: p['bytes'] for p in parts},
+                                         load_context(dist, index), repo=repo)
+        write_preview(dist, *descriptions[tag], name=tag + ".notes.md")
     if dry_run:
         return [{"tag": tag, "assets": len(parts) + 1 + len(extras)} for tag, parts, extras in jobs]
     github = github or GitHub(repo)
@@ -128,7 +140,9 @@ def publish(dist: Path, repo: str, previous=None, *, dry_run=True, github=None):
             names = [part["file"] for part in parts] + ["index.json"] + extras
             release = _find(github.releases(), tag)
             if release is None:
-                release = github.create(tag)
+                release = github.create(tag, *descriptions[tag])
+            elif release["draft"]:
+                release = github.describe(release, *descriptions[tag])
             receipt_path = dist / (tag + ".publication.json")
             atomic_json(receipt_path, {"repo": repo, "tag": tag, "release_id": release["id"], "state": "uploading"})
             assets = github.assets(release)
