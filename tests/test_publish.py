@@ -222,7 +222,7 @@ def test_publish_revision_must_match_manifest(tmp_path, monkeypatch):
 
 def test_publish_revision_dry_run_never_touches_remote(tmp_path, monkeypatch, capsys):
     dist, _ = _make_dist(tmp_path, revision=3)
-    monkeypatch.setattr(publish, "_existing_revisions", lambda _sid: [2])
+    monkeypatch.setattr(publish, "_existing_revisions", lambda _sid: pytest.fail('remote lookup in dry run'))
     publish.publish(dist, source_id="V", title_suffix="V", dry_run=True, revision=3)
     out = capsys.readouterr().out
     assert "datarev-V-r3" in out and "latest: False" in out

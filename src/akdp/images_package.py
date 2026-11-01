@@ -211,6 +211,8 @@ def package_images(
 
     # Write final index atomically.
     write_index_atomic(dist_dir / "index.json", raw_index)
+    from .release_notes import prepare_images
+    prepare_images(dist_dir, raw_index, prev_index)
 
     _logger.info(
         "images-package: mode=%s, baseline=%s, %d artworks",

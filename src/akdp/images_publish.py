@@ -16,12 +16,7 @@ import time
 from pathlib import Path
 
 from .images_state import BUILD_STATE_ASSET
-
-import json
-import logging
-import subprocess
-import time
-from pathlib import Path
+from .release_notes import load_context, render_image, write_preview
 
 _logger = logging.getLogger(__name__)
 
@@ -83,32 +78,27 @@ def _publish_baseline(
     index_path = dist_dir / "index.json"
     state_path = dist_dir / BUILD_STATE_ASSET
 
+    assets = {p.name: p.stat().st_size for p in shard_paths}
+    title, body = render_image(manifest, "baseline", assets, load_context(dist_dir, manifest), repo=DIST_REPO)
+    notes_file = write_preview(dist_dir, title, body, "baseline-notes.md")
+    delta_tag = f"images-{version_id}"
+    delta_title, delta_body = render_image(manifest, "index", {}, repo=DIST_REPO)
+    delta_notes = write_preview(dist_dir, delta_title, delta_body, "index-notes.md")
     if dry_run:
         print(f"[images-publish:dry-run] baseline {DIST_REPO} tag={tag}")
-        print(f"  shards: {[p.name for p in shard_paths]}")
-        print(f"  sentinel: {sentinel.name}")
-        print(f"  index: {index_path.name}")
         return
 
-    # Create baseline Release (not latest).
-    notes_file = dist_dir / "baseline-notes.md"
-    artwork_count = len(manifest.get("artworks", {}))
-    shard_list = sorted(manifest.get("shards", {}).keys())
-    notes_file.write_text(
-        f"Image baseline for game version {version_id}.\n\n"
-        f"Artworks: {artwork_count}\nShards: {', '.join(shard_list)}\n\n"
-        f"Full index is available as the `index.json` asset on the "
-        f"`images-{version_id}` sentinel release.",
-        encoding="utf-8",
-    )
     if not _release_exists(tag):
         _run_with_retry([
             "gh", "release", "create", tag,
             "-R", DIST_REPO,
-            "--title", f"Image Baseline {version_id}",
+            "--title", title,
             "--notes-file", str(notes_file),
             "--latest=false",
         ], f"create baseline {tag}")
+
+    else:
+        _update_draft_notes(tag, title, notes_file)
 
     # Upload shard assets.
     for asset in shard_paths + [sentinel]:
@@ -124,10 +114,12 @@ def _publish_baseline(
         _run_with_retry([
             "gh", "release", "create", delta_tag,
             "-R", DIST_REPO,
-            "--title", f"Image Delta {version_id} (sentinel)",
-            "--notes", "Sentinel delta (0 new images). See baseline.",
+            "--title", delta_title,
+            "--notes-file", str(delta_notes),
             "--latest=false",
         ], f"create sentinel {delta_tag}")
+    else:
+        _update_draft_notes(delta_tag, delta_title, delta_notes)
     sentinel_assets = [sentinel, index_path]
     if state_path.exists():
         sentinel_assets.append(state_path)
@@ -147,36 +139,28 @@ def _publish_delta(
     index_path = dist_dir / "index.json"
     state_path = dist_dir / BUILD_STATE_ASSET
 
+    title, body = render_image(manifest, "delta", {delta_zip.name: delta_zip.stat().st_size},
+                               load_context(dist_dir, manifest), repo=DIST_REPO)
+    notes_file = write_preview(dist_dir, title, body, "delta-notes.md")
     if dry_run:
         print(f"[images-publish:dry-run] delta {DIST_REPO} tag={tag}")
-        print(f"  delta: {delta_zip.name} ({delta_zip.stat().st_size / 1e6:.1f} MB)")
-        print(f"  index: {index_path.name}")
         return
 
-    # Guard: refuse to clobber an existing release with an empty delta.
     if delta_empty and _release_exists(tag):
-        _logger.warning(
-            "images-publish: delta for %s is empty and release %s already exists — skipping",
-            version_id, tag,
-        )
+        _logger.warning("images-publish: empty existing delta %s; skipping", tag)
         return
 
-    notes_file = dist_dir / "delta-notes.md"
-    artwork_count = len(manifest.get("artworks", {}))
-    notes_file.write_text(
-        f"Image delta for game version {version_id}.\n\n"
-        f"Artworks: {artwork_count}\n"
-        f"Baseline: {manifest.get('baselineVersion', '?')}",
-        encoding="utf-8",
-    )
     if not _release_exists(tag):
         _run_with_retry([
             "gh", "release", "create", tag,
             "-R", DIST_REPO,
-            "--title", f"Image Delta {version_id}",
+            "--title", title,
             "--notes-file", str(notes_file),
             "--latest=false",
         ], f"create delta {tag}")
+
+    else:
+        _update_draft_notes(tag, title, notes_file)
 
     assets = [delta_zip, index_path]
     if state_path.exists():
@@ -189,3 +173,11 @@ def _publish_delta(
         ], f"upload {asset.name}")
 
     _logger.info("[images-publish] delta %s published", tag)
+
+
+def _update_draft_notes(tag: str, title: str, notes: Path) -> None:
+    proc = subprocess.run(["gh", "release", "view", tag, "-R", DIST_REPO, "--json", "isDraft"],
+                          capture_output=True, text=True, check=True)
+    if json.loads(proc.stdout).get("isDraft"):
+        _run_with_retry(["gh", "release", "edit", tag, "-R", DIST_REPO,
+                         "--title", title, "--notes-file", str(notes)], "update image draft notes")

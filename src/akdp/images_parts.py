@@ -76,7 +76,10 @@ def package(images, source_index, output, previous=None, target=1024**3):
         atomic_json(identity_path, {'identity': identity})
     if (output / 'index.json').exists():
         verify(output, previous)
-        return json.loads((output / 'index.json').read_text())
+        final = json.loads((output / 'index.json').read_text())
+        from .release_notes import prepare_images
+        prepare_images(output, final, previous)
+        return final
     parts = []
     for group in sorted({v['group'] for v in selected.values()}):
         names = sorted(n for n, v in selected.items() if v['group'] == group)
@@ -125,6 +128,8 @@ def package(images, source_index, output, previous=None, target=1024**3):
         raise ValueError('release asset limit exceeded')
     atomic_json(output / 'index.json', index)
     verify(output, previous)
+    from .release_notes import prepare_images
+    prepare_images(output, index, previous)
     return index
 
 

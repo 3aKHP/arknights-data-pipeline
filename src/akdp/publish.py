@@ -149,12 +149,6 @@ def publish(
     validate_sqlite_descriptor(manifest)
 
     if revision >= 2:
-        max_existing = max(_existing_revisions(source_id), default=1)
-        if revision <= max_existing:
-            raise ValueError(
-                f"revision {revision} must exceed the already published "
-                f"revision {max_existing} for {source_id}"
-            )
         tag = f"{DATAREV_TAG_PREFIX}{source_id}-r{revision}"
         title = f"Game Data {title_suffix} rev {revision}"
         mark_latest = False
@@ -163,6 +157,11 @@ def publish(
         title = f"Game Data {title_suffix}"
         mark_latest = True
 
+    from .release_notes import load_context, render_data, write_preview
+    _, body = render_data(manifest, load_context(dist, manifest), repo=DIST_REPO,
+                          repair_text=(dist / "repair-description.txt").read_text(encoding="utf-8")
+                          if (dist / "repair-description.txt").is_file() else None)
+    notes_file = write_preview(dist, title, body)
     if dry_run:
         print(f"[publish:dry-run] {DIST_REPO} tag={tag} (revision {revision})")
         print(f"  assets: {[p.name for p in asset_paths]}")
@@ -170,13 +169,15 @@ def publish(
         print(f"  latest: {mark_latest}")
         return
 
+    if revision >= 2:
+        max_existing = max(_existing_revisions(source_id), default=1)
+        if revision <= max_existing:
+            raise ValueError(
+                f"revision {revision} must exceed the already published revision {max_existing} for {source_id}"
+            )
+
     # Keep the release draft until every asset has been uploaded and verified.
     # A failed run therefore cannot become `latest` and the next run can resume.
-    notes_file = dist / "release-notes.md"
-    notes_file.write_text(
-        "```json\n" + json.dumps(manifest, ensure_ascii=False, indent=2) + "\n```",
-        encoding="utf-8",
-    )
     state = _release_state(tag)
     if state is None:
         _run_with_retry([
@@ -188,6 +189,9 @@ def publish(
             "--latest=false",
         ], "release create draft")
         state = _release_state(tag) or {"isDraft": True, "assets": []}
+    elif state.get("isDraft", False):
+        _run_with_retry(["gh", "release", "edit", tag, "-R", DIST_REPO,
+                         "--title", title, "--notes-file", str(notes_file)], "update draft notes")
     if revision >= 2 and not state.get("isDraft", False):
         raise ValueError(f"published repair release is immutable: {tag}")
     if not state.get("isDraft", False) and _missing_or_invalid_assets(state, asset_paths):

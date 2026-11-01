@@ -180,7 +180,8 @@ def test_delta_publish_uploads_private_build_state(tmp_path: Path, monkeypatch) 
     dist = tmp_path / "images-dist"
     dist.mkdir()
     (dist / "images-delta-v2.zip").write_bytes(b"zip")
-    (dist / "index.json").write_text(json.dumps({"artworks": {}}), encoding="utf-8")
+    (dist / "index.json").write_text(json.dumps({"artworks": {}, "currentVersion": "v2",
+                                               "baselineVersion": "v1"}), encoding="utf-8")
     write_build_state(dist / BUILD_STATE_ASSET, BuildState(
         version_id="v2",
         bundle_hashes={"chararts/a.ab": "hash"},
@@ -189,6 +190,7 @@ def test_delta_publish_uploads_private_build_state(tmp_path: Path, monkeypatch) 
     ))
     commands: list[list[str]] = []
     monkeypatch.setattr(images_publish, "_release_exists", lambda _tag: True)
+    monkeypatch.setattr(images_publish, "_update_draft_notes", lambda *args: None)
     monkeypatch.setattr(
         images_publish,
         "_run_with_retry",
