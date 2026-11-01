@@ -173,3 +173,13 @@ def test_historical_asset_digest_mismatch_stops_before_table_read(tmp_path):
     sources = notes_refresh.Sources('owner/repo', tmp_path, [release])
     with pytest.raises(ValueError, match='digest mismatch'):
         sources.download(release, 'manifest.json')
+
+
+def test_fork_packaging_preview_links_to_the_selected_source(tmp_path):
+    index = {'schemaVersion': 'akdp-images/v2', 'baselineVersion': '26-10-01',
+             'currentVersion': '26-10-01', 'artworks': {}, 'baselineParts': []}
+    notes.prepare_images(tmp_path, index, None, repo='example/fork')
+    for name in ('release-notes.md', 'index-notes.md'):
+        body = (tmp_path / name).read_text()
+        assert 'github.com/example/fork/' in body
+        assert '3aKHP/arknights-data-pipeline' not in body

@@ -521,7 +521,8 @@ def cmd_images_package(args: argparse.Namespace) -> int:
         summary = {"imageFormat": "v2", "versionId": version_id, "mode": "delta" if previous else "baseline", "baselineVersion": final_index["baselineVersion"], "delta": {"empty": not parts}, "parts": len(parts), "totalBytes": sum(part["bytes"] for part in parts)}
         (args.workdir / "images-package.json").write_text(json.dumps(summary, indent=2) + "\n")
         from .release_notes import prepare_images
-        prepare_images(candidate_dist, final_index, previous, getattr(args, "excel_dir", None))
+        prepare_images(candidate_dist, final_index, previous, getattr(args, "excel_dir", None),
+                       repo=getattr(args, "image_repo", check_mod.DIST_REPO))
         print(f"images-package: v2 {summary['mode']}, {len(parts)} parts")
         return 0
     final_index, stats = images_package.package_images(
@@ -537,7 +538,7 @@ def cmd_images_package(args: argparse.Namespace) -> int:
     from .release_notes import prepare_images, read_json
     prepare_images(args.workdir / "images-dist", final_index,
                    read_json(prev_index) if prev_index.exists() else None,
-                   getattr(args, "excel_dir", None))
+                   getattr(args, "excel_dir", None), repo=getattr(args, "image_repo", check_mod.DIST_REPO))
     if d["mode"] == "baseline":
         print(f"images-package: BASELINE {d['baselineVersion']} "
               f"({len(d['shards'])} shards, {d['totalBytes']/1e9:.2f} GB)")

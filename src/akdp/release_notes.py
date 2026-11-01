@@ -256,7 +256,8 @@ def prepare_data(candidate: Path, baseline: Path | None, dist: Path, manifest: d
     write_preview(dist, *render_data(manifest, changes))
 
 
-def prepare_images(dist: Path, index: dict, previous: dict | None, excel: Path | None = None) -> None:
+def prepare_images(dist: Path, index: dict, previous: dict | None, excel: Path | None = None,
+                   *, repo=DEFAULT_REPO) -> None:
     changes = image_changes(index, previous, excel)
     write_context(dist, index, changes)
     baseline = index['baselineVersion'] == index['currentVersion']
@@ -266,6 +267,6 @@ def prepare_images(dist: Path, index: dict, previous: dict | None, excel: Path |
     else:
         names = index.get('shards', {}).values() if baseline else [f"images-delta-{index['currentVersion']}.zip"]
         assets = {name: (dist / name).stat().st_size for name in names}
-    write_preview(dist, *render_image(index, 'baseline' if baseline else 'delta', assets, changes))
+    write_preview(dist, *render_image(index, 'baseline' if baseline else 'delta', assets, changes, repo=repo))
     if baseline:
-        write_preview(dist, *render_image(index, 'index', {}, changes), name='index-notes.md')
+        write_preview(dist, *render_image(index, 'index', {}, changes, repo=repo), name='index-notes.md')
