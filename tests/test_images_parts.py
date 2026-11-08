@@ -1,3 +1,4 @@
+from inventory_fixture import prepare_inventory
 import copy
 import hashlib
 import json
@@ -87,6 +88,7 @@ def test_cli_v2_packaging_and_quarterly_rotation(tmp_path):
     (images / 'index.json').write_text(json.dumps(raw))
     (cache / 'hashes.json').write_text(json.dumps({'versionId': '26-10-01'}))
     args = argparse.Namespace(workdir=tmp_path, image_format='v2', rebaseline=False, part_target_bytes=700)
+    prepare_inventory(tmp_path)
     assert cli.cmd_images_package(args) == 0
     baseline = json.loads((tmp_path / 'images-dist/26-10-01/index.json').read_text())
     assert baseline['schemaVersion'] == 'akdp-images/v2'
@@ -128,6 +130,7 @@ def test_cli_incremental_pack_needs_only_changed_pngs(tmp_path):
         (tmp_path / 'images-cache/hashes.json').write_text(json.dumps({'versionId': version}))
     args = argparse.Namespace(workdir=tmp_path, image_format='v2', rebaseline=False, part_target_bytes=700)
     save('26-10-01')
+    prepare_inventory(tmp_path)
     assert cli.cmd_images_package(args) == 0
     baseline = json.loads((tmp_path / 'images-dist/26-10-01/index.json').read_text())
     (tmp_path / 'images-prev').mkdir()
@@ -135,6 +138,7 @@ def test_cli_incremental_pack_needs_only_changed_pngs(tmp_path):
     (images / 'a.png').unlink()
     raw['artworks']['b'] = entry('b.png', b'b')
     save('26-10-02')
+    prepare_inventory(tmp_path)
     assert cli.cmd_images_package(args) == 0
     dist = tmp_path / 'images-dist/26-10-02'
     current = json.loads((dist / 'index.json').read_text())
@@ -154,8 +158,8 @@ def test_stale_build_state_is_not_attached_to_new_candidate(tmp_path):
     (tmp_path / 'images-cache/hashes.json').write_text(json.dumps({'versionId': '26-10-02'}))
     write_build_state(tmp_path / 'images-dist/images-build-state.json', BuildState('26-10-01', {}, {}, frozenset()))
     args = argparse.Namespace(workdir=tmp_path, image_format='v2', rebaseline=False, part_target_bytes=700)
-    with pytest.raises(ValueError, match='build state'):
-        cli.cmd_images_package(args)
+    assert cli.cmd_images_package(args) == 1
+    assert not (tmp_path / 'images-dist/26-10-02').exists()
 
 
 def test_persistent_extraction_discards_previous_index(tmp_path, monkeypatch):

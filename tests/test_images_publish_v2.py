@@ -1,3 +1,4 @@
+from inventory_fixture import prepare_inventory
 import copy
 import hashlib
 import json
@@ -162,6 +163,7 @@ def test_cli_advances_previous_only_after_success(tmp_path, monkeypatch):
     (tmp_path / 'images-cache/hashes.json').write_text(json.dumps({'versionId':'26-10-01'}))
     args = argparse.Namespace(workdir=tmp_path, image_format='v2', rebaseline=False,
                               part_target_bytes=700, execute=True, image_repo='owner/repo')
+    prepare_inventory(tmp_path)
     cli.cmd_images_package(args)
     def fail(*a, **k):
         raise RuntimeError('network interrupted')
@@ -204,6 +206,7 @@ def test_cli_delta_republish_keeps_its_original_predecessor(tmp_path, monkeypatc
     for version in ['26-10-01', '26-10-02']:
         (images / 'index.json').write_text(json.dumps({'currentVersion': version, 'artworks': {}}))
         (cache / 'hashes.json').write_text(json.dumps({'versionId': version}))
+        prepare_inventory(tmp_path)
         cli.cmd_images_package(args)
         cli.cmd_images_publish(args)
     uploads = list(gh.uploads)

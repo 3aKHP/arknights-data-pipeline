@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import copy
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .images_index import write_index_atomic
 
 
 BUILD_STATE_ASSET = "images-build-state.json"
-BUILD_STATE_SCHEMA = "akdp-images-build-state/v1"
+BUILD_STATE_SCHEMA = "akdp-images-build-state/v2"
 
 
 @dataclass(frozen=True)
@@ -29,10 +29,19 @@ class BuildState:
     bundle_candidates: dict[str, tuple[str, ...]]
     valid_skin_ids: frozenset[str]
 
+    inventory: dict = field(default_factory=dict)
+    scanner_version: int = 0
+    source_fingerprint: str = ""
+    coverage: dict = field(default_factory=dict)
+
     def to_dict(self) -> dict:
         return {
             "schemaVersion": BUILD_STATE_SCHEMA,
             "versionId": self.version_id,
+            "inventory": self.inventory,
+            "scannerVersion": self.scanner_version,
+            "sourceFingerprint": self.source_fingerprint,
+            "coverage": self.coverage,
             "bundleHashes": dict(sorted(self.bundle_hashes.items())),
             "bundleCandidates": {
                 bundle: list(candidates)
@@ -66,7 +75,7 @@ def load_build_state(path: Path) -> BuildState | None:
     """Load a state asset, returning ``None`` for any incompatible input."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict) or raw.get("schemaVersion") != BUILD_STATE_SCHEMA:
+        if not isinstance(raw, dict) or raw.get("schemaVersion") not in (BUILD_STATE_SCHEMA, "akdp-images-build-state/v1"):
             return None
         version_id = raw.get("versionId")
         hashes = raw.get("bundleHashes")
@@ -98,6 +107,10 @@ def load_build_state(path: Path) -> BuildState | None:
             for bundle, skin_ids in candidates.items()
         },
         valid_skin_ids=frozenset(valid),
+        inventory=raw.get("inventory", {}) if isinstance(raw.get("inventory", {}), dict) else {},
+        scanner_version=raw.get("scannerVersion", 0),
+        source_fingerprint=raw.get("sourceFingerprint", ""),
+        coverage=raw.get("coverage", {}),
     )
 
 

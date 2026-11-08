@@ -137,7 +137,13 @@ uv run akdp --workdir <repair-workdir> publish --revision 2 --execute
 图片工作流额外从上一版 `images-*` Release 恢复私有的
 `images-build-state.json`：它用 AB 包 hash 先筛出变化包，再以 Sprite SHA-256 决定
 真正的发布 delta。该资产不属于 PRTS-MCP 的公开 `index.json` 契约；旧 Release 尚无
-此资产、状态不兼容或版本不匹配时，工作流会安全回退到一次全量图片构建。
+此资产、状态不兼容或版本不匹配时，需要重新建立完整图片资源清单。
+
+图片覆盖校验基于包内静态立绘声明；仅含可验证战斗 Spine 资源的基础单位可以
+自动记录为当前无独立立绘。未知结构、提取失败及既有立绘异常消失会阻止发布。
+私有构建状态 v2 保存包 hash、资源声明和扫描器版本，后续按包增量更新。
+初始化或重新建立清单须传入 `--allow-inventory-rebuild`，并在 GitHub-hosted runner
+执行；本机和 self-hosted runner 会在全量下载前退出。扫描不会切换图片 baseline。
 
 图片 baseline 本轮按[2026「感谢庆典」窗口临时裁决](docs/image-baseline-interim-decision-2026-celebration.md)执行：感谢庆典不重切，沿用现有 baseline 与普通 delta；首个 re-baseline 候选窗口顺延至 2027 农历新年，完整生命周期方案在下一候选窗口前形成。[初步评估备忘](docs/image-baseline-lifecycle-preliminary-memo.md)继续保留为评估素材。
 

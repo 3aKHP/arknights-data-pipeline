@@ -136,6 +136,8 @@ def test_incremental_package_uses_only_partial_files_and_advances_state(tmp_path
         "bundle_candidates": {"chararts/changed.ab": ["changed"]},
     }), encoding="utf-8")
 
+    from inventory_fixture import prepare_inventory
+    prepare_inventory(work)
     assert cmd_images_package(argparse.Namespace(workdir=work)) == 0
 
     final_index = json.loads((work / "images-dist" / "index.json").read_text(encoding="utf-8"))

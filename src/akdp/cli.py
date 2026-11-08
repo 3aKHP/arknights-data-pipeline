@@ -7,6 +7,7 @@ images-variants / images-package / images-publish.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import os
 import shutil
@@ -292,18 +293,34 @@ def cmd_images_fetch(args: argparse.Namespace) -> int:
     if excel_dir is not None and excel_dir.is_dir():
         valid_skin_ids = _load_skin_ids(excel_dir)
 
+    from .images_inventory import inventory_usable
+    rebuild_inventory = not inventory_usable(previous_state)
     rebaseline = False
     if getattr(args, "image_format", "v1") == "v2":
         remote = check_mod.fetch_remote_version(args.server)
         rebaseline = _image_baseline_needed(args, previous_index, remote["versionId"])
     incremental = bool(
-        not rebaseline and previous_state
+        not rebuild_inventory and not rebaseline and previous_state
         and valid_skin_ids
         and state_matches_previous_index(previous_state, previous_index)
     )
+    if not incremental and not (
+        getattr(args, "allow_inventory_rebuild", False)
+        and os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
+    ):
+        print("[images-fetch] inventory rebuild requires --allow-inventory-rebuild on a GitHub-hosted runner; no bundles downloaded", file=sys.stderr)
+        return 1
+
     previous_hashes = previous_state.bundle_hashes if incremental and previous_state else {}
     new_skin_ids = valid_skin_ids - previous_state.valid_skin_ids if incremental and previous_state else set()
     required_bundles = previous_state.bundles_for(new_skin_ids) if incremental and previous_state else set()
+    if incremental:
+        from .images_inventory import classify
+        coverage = classify(excel_dir, valid_skin_ids, previous_state.inventory)
+        for skin, evidence in coverage.items():
+            if skin in new_skin_ids or evidence != previous_state.coverage.get(skin):
+                required_bundles.update(source[0] for source in evidence["sources"])
 
     stats, info = images_fetch.fetch_image_bundles(
         cache_dir,
@@ -317,6 +334,8 @@ def cmd_images_fetch(args: argparse.Namespace) -> int:
     )
     plan = {
         "incremental": incremental,
+        "excelDir": str(excel_dir.resolve()) if excel_dir else None,
+        "sourceFingerprint": info.get("contentFingerprint", ""),
         "versionId": info.get("versionId", ""),
         "bundleHashes": info.get("hashes", {}),
         "downloadedBundles": stats.downloaded,
@@ -331,7 +350,7 @@ def cmd_images_fetch(args: argparse.Namespace) -> int:
     d = stats.to_dict()
     print(f"images-fetch: downloaded {d['downloaded']}, "
           f"changed {d['changed']}, required {d['required']}, "
-          f"unchanged {d['skipped_unchanged']}, failed {d['failed']} "
+          f"unchanged {d['skipped_unchanged']}, failed {d['failed']}, bytes {d['downloaded_bytes']} "
           f"(versionId={info.get('versionId')})")
     for f in stats.failed:
         print(f"[images-fetch] FAIL {f['bundle']}: {f['error']}", file=sys.stderr)
@@ -355,6 +374,26 @@ def cmd_images_extract(args: argparse.Namespace) -> int:
     output = args.workdir / "images-out"
     # extract_images clears old PNGs; also discard the previous derived index.
     (output / "index.json").unlink(missing_ok=True)
+    from .images_inventory import scan_bundle
+    from .images_fetch import _safe_filename
+    inventory = {}
+    if plan_path.exists() and plan.get("incremental"):
+        previous_state = load_build_state(args.workdir / "images-prev" / BUILD_STATE_ASSET)
+        if previous_state:
+            inventory.update(previous_state.inventory)
+    hashes = plan.get("bundleHashes", {}) if plan_path.exists() else {}
+    inventory = {name: record for name, record in inventory.items() if name in hashes}
+    try:
+        selected = sorted(bundle_paths or set())
+        for number, bundle in enumerate(selected, 1):
+            inventory[bundle] = scan_bundle(
+                (args.workdir / "images-cache" / _safe_filename(bundle)).read_bytes(), hashes[bundle])
+            if number % 50 == 0 or number == len(selected):
+                print(f"images-scan: {number}/{len(selected)} bundles inspected", flush=True)
+    except Exception as exc:
+        print(f"[images-extract] inventory scan failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    (args.workdir / "images-inventory.json").write_text(json.dumps(inventory, indent=2) + "\n")
     stats = images_extract.extract_images(
         args.workdir / "images-cache", output, excel, bundle_paths,
     )
@@ -440,8 +479,6 @@ def cmd_images_package(args: argparse.Namespace) -> int:
     plan_path = args.workdir / "images-plan.json"
     if plan_path.exists():
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
-        if not plan.get("currentValidSkinIds"):
-            plan = None
     else:
         plan = None
     if plan is not None:
@@ -454,6 +491,9 @@ def cmd_images_package(args: argparse.Namespace) -> int:
         processed_bundles = set(plan.get("downloadedBundles", []))
         removed_bundles = set(plan.get("removedBundles", []))
         extract_stats = json.loads((args.workdir / "images-extract.json").read_text(encoding="utf-8"))
+        if extract_stats.get("failed", 0):
+            print("[images-package] extraction failures prevent publication", file=sys.stderr)
+            return 1
         processed_candidates = extract_stats.get("bundle_candidates", {})
         if not all(isinstance(v, list) for v in processed_candidates.values()):
             print("[images-package] invalid extracted bundle candidates", file=sys.stderr)
@@ -462,19 +502,8 @@ def cmd_images_package(args: argparse.Namespace) -> int:
         if previous_state and plan.get("incremental"):
             known_affected |= previous_state.candidates_for(processed_bundles | removed_bundles)
             known_affected |= previous_state.valid_skin_ids - valid_skin_ids
-            # Every newly-valid skin must have been extracted either from a
-            # changed bundle or from a state-directed unchanged bundle.  The
-            # public image contract currently has complete skin coverage, so
-            # accepting a missing new entry would silently publish a partial
-            # full index.
-            missing = set(plan.get("newSkinIds", [])) - set(partial_index.get("artworks", {}))
-            if missing:
-                print(
-                    "[images-package] incremental coverage missing for "
-                    f"{sorted(missing)[:5]}; refusing to publish partial index",
-                    file=sys.stderr,
-                )
-                return 1
+        if not plan.get("incremental"):
+            known_affected |= set((previous_index or {}).get("artworks", {}))
         merged_index = merge_incremental_index(
             previous_index,
             partial_index,
@@ -483,6 +512,21 @@ def cmd_images_package(args: argparse.Namespace) -> int:
         )
         if not merged_index.get("currentVersion"):
             print("[images-package] merged index lacks currentVersion", file=sys.stderr)
+            return 1
+        from .images_inventory import SCANNER_VERSION, classify, inventory_complete, validate_coverage
+        try:
+            inventory = json.loads((args.workdir / "images-inventory.json").read_text())
+            if not inventory_complete(inventory, plan.get("bundleHashes", {})) or not plan.get("sourceFingerprint"):
+                raise ValueError("incomplete or stale resource inventory")
+            coverage = classify(Path(plan["excelDir"]), valid_skin_ids, inventory)
+            report = {"scannerVersion": SCANNER_VERSION, "sourceFingerprint": plan["sourceFingerprint"],
+                      "coverage": coverage}
+            (args.workdir / "images-coverage.json").write_text(json.dumps(report, indent=2) + "\n")
+            print("images-coverage: " + ", ".join(f"{status}={sum(v['status'] == status for v in coverage.values())}"
+                  for status in ("available", "no_standalone_art", "unresolved")))
+            validate_coverage(coverage, merged_index["artworks"], (previous_index or {}).get("artworks", {}), valid_skin_ids)
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            print(f"[images-package] {exc}", file=sys.stderr)
             return 1
         from .images_index import write_index_atomic
 
@@ -495,7 +539,12 @@ def cmd_images_package(args: argparse.Namespace) -> int:
             processed_candidates=processed_candidates,
             valid_skin_ids=valid_skin_ids,
         )
+        next_state = replace(next_state, inventory=inventory, scanner_version=SCANNER_VERSION,
+                             source_fingerprint=plan["sourceFingerprint"], coverage=coverage)
         write_build_state(args.workdir / "images-dist" / BUILD_STATE_ASSET, next_state)
+    else:
+        print("[images-package] resource inventory plan is required", file=sys.stderr)
+        return 1
     if getattr(args, "image_format", "v1") == "v2":
         from . import images_parts
         previous = json.loads(prev_index.read_text()) if prev_index.exists() else None
@@ -763,6 +812,7 @@ def main() -> int:
     p.add_argument("--part-target-bytes", type=int, default=1024**3)
     p.add_argument("--excel-dir", type=Path,
                    help="optional gamedata/excel path for durable incremental planning")
+    p.add_argument("--allow-inventory-rebuild", action="store_true", help="allow complete inventory scan on GitHub-hosted runners")
     p.set_defaults(func=cmd_images_fetch)
 
     p = sub.add_parser("images-extract", help="extract Sprite PNGs from cached AB bundles")
@@ -798,6 +848,7 @@ def main() -> int:
     p.add_argument("--publish", action="store_true", help="auto-publish after successful run")
     p.add_argument("--excel-dir", type=Path, required=True,
                    help="path to gamedata/excel/")
+    p.add_argument("--allow-inventory-rebuild", action="store_true", help="allow complete inventory scan on GitHub-hosted runners")
     p.set_defaults(func=cmd_images_run)
 
     p = sub.add_parser("images-latest-tag", help="print latest published image delta tag")
