@@ -1,4 +1,6 @@
 import argparse
+import asyncio
+import hashlib
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -118,3 +120,46 @@ def test_structural_scanner_with_generic_unit(monkeypatch):
     assert inventory.scan_bundle(b'fixture', 'hash')['battleOnlyOwners'] == [owner]
     objects.append(obj(5, 'Texture2D', {}, m_Name='unexplained'))
     assert inventory.scan_bundle(b'fixture', 'hash')['battleOnlyOwners'] == []
+
+
+@pytest.mark.parametrize('damage', ['none', 'length', 'digest'])
+def test_download_integrity_prevents_corrupt_state(tmp_path, monkeypatch, damage):
+    payload = b'verified-bundle'
+    info = dict(name='chararts/fixture.ab', hash='bundle-hash',
+                md5=hashlib.md5(payload).hexdigest(), abSize=len(payload))
+    if damage == 'length':
+        info['abSize'] += 1
+    elif damage == 'digest':
+        info['md5'] = '0' * 32
+    class Response:
+        def __init__(self, data):
+            self.data = data
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        def raise_for_status(self):
+            pass
+        async def read(self):
+            return self.data
+    class Session:
+        def get(self, url):
+            return Response(json.dumps({'versionId': 'fixture', 'abInfos': [info]}).encode()
+                            if 'hot_update_list' in url else payload)
+        async def close(self):
+            pass
+    network = SimpleNamespace(default_platform='Android', versions={('cn', 'Android'): {'resVersion': 'fixture'}},
+                              domains={'cn': {'hu': 'https://fixture.invalid'}}, session=Session())
+    monkeypatch.setattr(images_fetch.netn, 'NetworkSession', lambda **kw: network)
+    monkeypatch.setattr(images_fetch, 'unzip_only_file', lambda data: data)
+    async def no_delay(seconds):
+        pass
+    monkeypatch.setattr(images_fetch.asyncio, 'sleep', no_delay)
+    stats, metadata = asyncio.run(images_fetch._run_fetch(tmp_path, 'cn', {}, set(), False))
+    if damage == 'none':
+        assert stats.downloaded == [info['name']]
+        assert metadata['hashes'] == {info['name']: info['hash']}
+    else:
+        assert stats.failed and not stats.downloaded
+        assert metadata['hashes'] == {}
+        assert not list(tmp_path.glob('*.ab'))
