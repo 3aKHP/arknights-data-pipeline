@@ -131,7 +131,7 @@ jobs:
         env:
           FORCE_RUN: ${{ inputs.force || false }}
         run: |
-          args=(--workdir work images-run --publish --excel-dir work/candidate/zh_CN/gamedata/excel)
+          args=(--workdir work images-run --allow-inventory-rebuild --publish --excel-dir work/candidate/zh_CN/gamedata/excel)
           if [[ "$FORCE_RUN" == "true" ]]; then args+=(--force); fi
           uv run akdp "${args[@]}"
 
@@ -159,3 +159,14 @@ jobs:
           done
           echo "::error::Pipeline event upload failed after 3 attempts"
           exit 1
+
+      - name: Upload image diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-diagnostics
+          path: |
+            work/images-coverage.json
+            work/images-inventory.json
+            work/images-extract.json
+          if-no-files-found: ignore

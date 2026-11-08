@@ -67,7 +67,18 @@ jobs:
           fi
       - name: Build and optionally publish v2 candidate
         run: |
-          args=(--workdir work images-run --image-format v2 --image-repo "$IMAGE_REPO" --excel-dir work/candidate/zh_CN/gamedata/excel)
+          args=(--workdir work images-run --allow-inventory-rebuild --image-format v2 --image-repo "$IMAGE_REPO" --excel-dir work/candidate/zh_CN/gamedata/excel)
           if [ "$PUBLISH" = true ]; then args+=(--publish); fi
           if [ "$REBASELINE" = true ]; then args+=(--rebaseline --force); fi
           uv run akdp "${args[@]}"
+
+      - name: Upload image diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-diagnostics
+          path: |
+            work/images-coverage.json
+            work/images-inventory.json
+            work/images-extract.json
+          if-no-files-found: ignore

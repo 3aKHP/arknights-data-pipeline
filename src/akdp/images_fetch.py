@@ -9,6 +9,7 @@ pattern as ``check.py``).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -36,12 +37,14 @@ class FetchStats:
     changed: list[str] = field(default_factory=list)
     required: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
+    downloaded_bytes: int = 0
     skipped_unchanged: int = 0
     failed: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "downloaded": len(self.downloaded),
+            "downloaded_bytes": self.downloaded_bytes,
             "changed": len(self.changed),
             "required": len(self.required),
             "removed": len(self.removed),
@@ -151,8 +154,12 @@ async def _run_fetch(
                                 response.raise_for_status()
                                 zipped = await response.read()
                             data = unzip_only_file(zipped)
+                            record = known[path]
+                            if len(data) != record["abSize"] or hashlib.md5(data).hexdigest() != record["md5"]:
+                                raise ValueError("bundle length or MD5 mismatch")
                             (cache_dir / _safe_filename(path)).write_bytes(data)
                             stats.downloaded.append(path)
+                            stats.downloaded_bytes += len(zipped)
                             return
                         except Exception as exc:  # noqa: BLE001
                             last_err = f"{type(exc).__name__}: {exc}"

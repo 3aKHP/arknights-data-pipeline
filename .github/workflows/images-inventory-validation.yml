@@ -1,0 +1,60 @@
+name: Image inventory validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/akdp/images*.py'
+      - 'src/akdp/cli.py'
+      - '.github/workflows/images-inventory-validation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - run: pip install uv
+      - run: uv sync --all-extras --locked
+      - name: Prepare current tables and published image predecessor
+        run: |
+          mkdir -p work/excel work/images-prev
+          gh release download -R 3aKHP/arknights-data-pipeline -p zh_CN-excel.zip -D work
+          unzip -q work/zh_CN-excel.zip -d work/excel
+          tag=$(uv run --frozen akdp images-latest-tag)
+          gh release download "$tag" -R 3aKHP/arknights-data-pipeline -p index.json -p images-build-state.json -D work/images-prev
+      - name: Build full inventory without publication
+        run: uv run --frozen akdp --workdir work images-run --allow-inventory-rebuild --force --excel-dir work/excel/zh_CN/gamedata/excel
+      - name: Verify next fetch reuses inventory
+        run: |
+          cp work/images-dist/index.json work/images-prev/index.json
+          cp work/images-dist/images-build-state.json work/images-prev/images-build-state.json
+          uv run --frozen akdp --workdir work images-fetch --excel-dir work/excel/zh_CN/gamedata/excel
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          plan = json.loads(Path('work/images-plan.json').read_text())
+          assert plan['incremental'], 'inventory was not reused'
+          assert not plan['downloadedBundles'], 'unexpected download; inspect upstream changes'
+          PY
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-inventory-validation
+          path: |
+            work/images-coverage.json
+            work/images-inventory.json
+            work/images-extract.json
+            work/images-plan.json
+            work/images-dist/index.json
+            work/images-dist/images-build-state.json
+          if-no-files-found: ignore
