@@ -99,7 +99,7 @@ def classify(excel: Path, valid: set[str], inventory: dict) -> dict:
     for bundle, record in inventory.items():
         for path in record["art"]:
             if path.endswith(".prefab"):
-                resources.setdefault(PurePosixPath(path).stem, []).append((bundle, path))
+                resources.setdefault(PurePosixPath(path).stem, []).append([bundle, path])
     result = {}
     for skin in sorted(valid):
         info = skins[skin]
@@ -114,7 +114,7 @@ def classify(excel: Path, valid: set[str], inventory: dict) -> dict:
         elif (not matches and "@" not in skin and resource
               and owner in canonical.get("battleOnlyOwners", []) and not owner_has_art):
             status, reason = "no_standalone_art", "verified_battle_spine_only"
-            matches = [(f"chararts/{owner}.ab", canonical["declarations"][0])]
+            matches = [[f"chararts/{owner}.ab", canonical["declarations"][0]]]
         else:
             status, reason = "unresolved", "missing_or_ambiguous_illustration_evidence"
         result[skin] = {"status": status, "reason": reason, "sources": matches}

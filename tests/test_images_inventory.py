@@ -77,6 +77,32 @@ def test_reference_errors_are_not_absence():
         list(inventory._references({'texture': {'m_PathID': 1, 'm_FileID': 1}}))
 
 
+@pytest.mark.parametrize('change_reference', [False, True])
+def test_incremental_planner_reuses_json_evidence_and_refreshes_changed_reference(tmp_path, monkeypatch, change_reference):
+    valid = tables(tmp_path)
+    bundle = 'chararts/char_999_fixture.ab'
+    records = {bundle: record(art=[
+        f'dyn/arts/characters/char_999_fixture/illust_char_999_fixture_{n}.prefab' for n in (1, 2)])}
+    previous = tmp_path / 'images-prev'
+    previous.mkdir()
+    (previous / 'index.json').write_text(json.dumps({'currentVersion': 'version'}))
+    state = BuildState('version', {bundle: 'hash'}, {}, frozenset(valid), records,
+                       inventory.SCANNER_VERSION, 'source', inventory.classify(tmp_path, valid, records))
+    write_build_state(previous / 'images-build-state.json', state)
+    if change_reference:
+        path = tmp_path / 'skin_table.json'
+        data = json.loads(path.read_text())
+        data['charSkins']['char_999_fixture#1']['illustId'] = 'illust_char_999_fixture_2'
+        path.write_text(json.dumps(data))
+    def fetch(cache, **kwargs):
+        assert kwargs['required_bundles'] == ({bundle} if change_reference else set())
+        assert kwargs['prev_hashes'] == {bundle: 'hash'}
+        cache.mkdir()
+        return images_fetch.FetchStats(), {'hashes': {bundle: 'hash'}, 'versionId': 'version', 'contentFingerprint': 'source'}
+    monkeypatch.setattr(images_fetch, 'fetch_image_bundles', fetch)
+    assert cli.cmd_images_fetch(argparse.Namespace(workdir=tmp_path, excel_dir=tmp_path, server='cn')) == 0
+
+
 def test_structural_scanner_with_generic_unit(monkeypatch):
     def obj(ident, kind, tree, **data):
         return SimpleNamespace(path_id=ident, type=SimpleNamespace(name=kind),

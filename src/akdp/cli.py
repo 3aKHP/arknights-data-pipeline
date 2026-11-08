@@ -318,8 +318,9 @@ def cmd_images_fetch(args: argparse.Namespace) -> int:
     if incremental:
         from .images_inventory import classify
         coverage = classify(excel_dir, valid_skin_ids, previous_state.inventory)
-        for skin in new_skin_ids:
-            required_bundles.update(source[0] for source in coverage[skin]["sources"])
+        for skin, evidence in coverage.items():
+            if skin in new_skin_ids or evidence != previous_state.coverage.get(skin):
+                required_bundles.update(source[0] for source in evidence["sources"])
 
     stats, info = images_fetch.fetch_image_bundles(
         cache_dir,
