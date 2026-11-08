@@ -163,3 +163,20 @@ def test_download_integrity_prevents_corrupt_state(tmp_path, monkeypatch, damage
         assert stats.failed and not stats.downloaded
         assert metadata['hashes'] == {}
         assert not list(tmp_path.glob('*.ab'))
+
+
+@pytest.mark.parametrize('kind,reachable', [('TextAsset', True), ('TextAsset', False), ('MonoBehaviour', False)])
+def test_battle_only_rejects_unexplained_objects(monkeypatch, kind, reachable):
+    owner = 'char_999_fixture'
+    def obj(ident, name, kind, tree):
+        return SimpleNamespace(path_id=ident, type=SimpleNamespace(name=kind),
+                               read_typetree=lambda: tree,
+                               read=lambda: SimpleNamespace(m_Name=name, m_Script=owner+'.png'))
+    refs = [2, 3] + ([5] if reachable else [])
+    root = obj(1, 'DefaultSkin', 'GameObject', {'refs': [{'m_FileID': 0, 'm_PathID': n} for n in refs]})
+    objects = [root, obj(2, owner+'.atlas', 'TextAsset', {}), obj(3, owner+'.skel', 'TextAsset', {}),
+               obj(4, owner, 'Texture2D', {}), obj(5, 'unknown', kind, {})]
+    monkeypatch.setattr(inventory.UnityPy, 'load', lambda data: SimpleNamespace(
+        container={f'dyn/battle/prefabs/skins/character/{owner}/defaultskin.prefab': root}, objects=objects))
+    with pytest.raises(ValueError, match='unclassified'):
+        inventory.scan_bundle(b'fixture', 'hash')

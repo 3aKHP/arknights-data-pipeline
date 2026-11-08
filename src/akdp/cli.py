@@ -384,9 +384,12 @@ def cmd_images_extract(args: argparse.Namespace) -> int:
     hashes = plan.get("bundleHashes", {}) if plan_path.exists() else {}
     inventory = {name: record for name, record in inventory.items() if name in hashes}
     try:
-        for bundle in sorted(bundle_paths or set()):
+        selected = sorted(bundle_paths or set())
+        for number, bundle in enumerate(selected, 1):
             inventory[bundle] = scan_bundle(
                 (args.workdir / "images-cache" / _safe_filename(bundle)).read_bytes(), hashes[bundle])
+            if number % 50 == 0 or number == len(selected):
+                print(f"images-scan: {number}/{len(selected)} bundles inspected", flush=True)
     except Exception as exc:
         print(f"[images-extract] inventory scan failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1

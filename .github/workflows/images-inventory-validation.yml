@@ -14,7 +14,7 @@ permissions:
 jobs:
   inventory:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
     env:
       GH_TOKEN: ${{ github.token }}
     steps:

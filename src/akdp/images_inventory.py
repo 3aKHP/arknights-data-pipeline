@@ -7,7 +7,7 @@ from pathlib import Path, PurePosixPath
 
 from .images_extract import UnityPy
 
-SCANNER_VERSION = 1
+SCANNER_VERSION = 2
 
 
 def _references(value, field=""):
@@ -67,12 +67,16 @@ def scan_bundle(data: bytes, bundle_hash: str) -> dict:
                     if isinstance(script, bytes):
                         script = script.decode("utf-8")
                     atlases.update(line.strip()[:-4] for line in script.splitlines() if line.strip().endswith(".png"))
+                else:
+                    raise ValueError("unclassified TextAsset in battle-only package")
         # Spine may resolve atlas pages by name rather than a direct PPtr.
         for obj in env.objects:
             if obj.type.name == "Texture2D" and obj.path_id not in visited:
                 textures.add(obj.read().m_Name)
+            elif obj.path_id not in visited and obj.type.name != "AssetBundle":
+                raise ValueError("unclassified unreachable battle resource object")
         sprites = {obj.path_id for obj in env.objects if obj.type.name == "Sprite"}
-        if not sprites and textures and textures <= atlases and owner in skeletons:
+        if not sprites and textures and textures == atlases and owner in skeletons:
             battle_only.append(owner)
     return {"hash": bundle_hash, "declarations": sorted(declarations), "art": art,
             "battleOnlyOwners": battle_only}
